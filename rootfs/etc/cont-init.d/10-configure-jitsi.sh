@@ -194,50 +194,51 @@ if [[ -f "$NGINX_CONF" ]]; then
     # After the python rewrite the :80 server{} block becomes a plain
     # vhost that serves the jitsi SPA + proxies BOSH / WS to prosody,
     # exactly what we want.
-    python3 <<PY
-import pathlib
-p = pathlib.Path("$NGINX_CONF")
+    NGINX_CONF="$NGINX_CONF" python3 <<'PY'
+import pathlib, os, re
+p = pathlib.Path(os.environ["NGINX_CONF"])
 text = p.read_text()
-# Mark the real :80 server block as default_server so it answers
-# requests that arrive without a Host: header (which is exactly what
-# OpenHost's router does -- it strips Host and passes X-Forwarded-Host
-# only).
-text = text.replace("listen 80;", "listen 80 default_server;", 1)
-text = text.replace("listen [::]:80;", "listen [::]:80 default_server;", 1)
+
+# The jitsi-meet nginx template has two server blocks:
+#   * :80 -- tiny, does acme-challenge + 301 redirect to https
+#   * :443 -- all the real content (root, locations, BOSH, ws, etc)
+#
+# OpenHost terminates TLS in front of us and speaks plain HTTP on 80
+# to the container, so we need the *real* :443 content on :80. We do
+# two transforms:
+#   1. Rewrite "listen 443 ..." to "listen 80 default_server ...".
+#      default_server makes this vhost catch Host-less requests
+#      (OpenHost's router strips Host: and passes X-Forwarded-Host).
+#   2. Rewrite the original :80 block's listen directives to an
+#      unused localhost port so it doesn't bind :80 and fight the
+#      real vhost. Then comment out its '301 https' so even that
+#      backchannel never redirects anything.
+#   3. Comment out every ssl_* directive and listen 443 references
+#      since we're not doing TLS in-container.
+
+# Step 1: swap :443 -> :80 default_server (first matching block only).
+text = re.sub(
+    r"listen\s+443\s+ssl\s+http2\s*;",
+    "listen 80 default_server;",
+    text,
+    count=1,
+)
+text = re.sub(
+    r"listen\s+\[::\]:443\s+ssl\s+http2\s*;",
+    "listen [::]:80 default_server;",
+    text,
+    count=1,
+)
+
+# Step 2: the *original* :80 block's listen directives now collide
+# with the newly-80 block. Bind it to a dead localhost port instead.
+text = text.replace("listen 80;", "listen 127.0.0.1:65443;", 1)
+text = text.replace("listen [::]:80;", "listen [::1]:65444;", 1)
+
+# Step 3: comment out any remaining TLS-specific directives.
 out = []
-# Track which server{} block we're inside so we can rewrite the 443
-# block's listen directive to bind to a harmless unused localhost
-# port. Otherwise commenting out just the :443 listen leaves the
-# block listening on :80 (nginx's default), which collides with our
-# real :80 block.
-depth = 0
-in_server = False
-server_has_443 = False
 for line in text.splitlines():
     stripped = line.lstrip()
-    # Track braces first.
-    depth_delta = line.count("{") - line.count("}")
-
-    if stripped.startswith("server {") or stripped == "server {":
-        in_server = True
-        server_has_443 = False
-        out.append(line)
-        depth += depth_delta
-        continue
-
-    if in_server and stripped.startswith("listen") and "443" in stripped:
-        # Rewrite both listen directives to unique unused localhost
-        # bindings. Keeps the block syntactically valid but never
-        # receives traffic. Using different (ip:port) pairs so nginx
-        # doesn't complain about duplicate listens.
-        if "[::]" in stripped:
-            out.append("    listen [::1]:65444;  # was: " + stripped)
-        else:
-            out.append("    listen 127.0.0.1:65443;  # was: " + stripped)
-        server_has_443 = True
-        depth += depth_delta
-        continue
-
     if stripped.startswith("ssl_certificate") \
        or stripped.startswith("ssl_certificate_key") \
        or stripped.startswith("ssl_trusted_certificate") \
@@ -246,18 +247,11 @@ for line in text.splitlines():
        or stripped.startswith("ssl_ciphers") \
        or stripped.startswith("ssl_prefer_server_ciphers") \
        or stripped.startswith("ssl_session_") \
-       or stripped.startswith("return 301 https"):
+       or stripped.startswith("return 301 https") \
+       or (stripped.startswith("listen") and "443" in stripped):
         out.append("# " + line)
-        depth += depth_delta
         continue
-
-    # If we're exiting a server block, reset state.
-    if in_server and depth + depth_delta <= 0:
-        in_server = False
-        server_has_443 = False
-
     out.append(line)
-    depth += depth_delta
 p.write_text("\n".join(out) + "\n")
 PY
     log "neutered :443 listener + ssl_* directives + HTTPS redirect in nginx config"
