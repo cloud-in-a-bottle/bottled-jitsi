@@ -179,17 +179,28 @@ rm -f /etc/nginx/sites-enabled/default
 
 NGINX_CONF="/etc/nginx/sites-available/$HOSTNAME.conf"
 if [[ -f "$NGINX_CONF" ]]; then
-    # Comment out any line that binds to :443 or references SSL certs
-    # that don't exist in this container. nginx then parses the 443
-    # server {} block but never listens on 443, so it becomes a
-    # harmless no-op.
+    # We need to do two transforms on the jitsi-meet nginx template:
+    #   1. Disable the :443 listener + all ssl_* directives. OpenHost's
+    #      Caddy already terminates TLS upstream on real port 443; our
+    #      container has no real certs.
+    #   2. Disable the :80 -> :443 redirect. OpenHost speaks plain
+    #      HTTP to us on port 80 (which it then wraps in TLS on the
+    #      way out to the browser), so if the :80 server does a 301
+    #      to https:// the outer client sees a redirect loop.
+    #
+    # After the python rewrite the :80 server{} block becomes a plain
+    # vhost that serves the jitsi SPA + proxies BOSH / WS to prosody,
+    # exactly what we want.
     python3 <<PY
-import re, pathlib
+import pathlib
 p = pathlib.Path("$NGINX_CONF")
 text = p.read_text()
 out = []
+skip_redirect_block = False
 for line in text.splitlines():
     stripped = line.lstrip()
+
+    # Comment out anything tied to TLS.
     if (stripped.startswith("listen") and "443" in stripped) \
        or stripped.startswith("ssl_certificate") \
        or stripped.startswith("ssl_certificate_key") \
@@ -198,13 +209,14 @@ for line in text.splitlines():
        or stripped.startswith("ssl_protocols") \
        or stripped.startswith("ssl_ciphers") \
        or stripped.startswith("ssl_prefer_server_ciphers") \
-       or stripped.startswith("ssl_session_"):
+       or stripped.startswith("ssl_session_") \
+       or stripped.startswith("return 301 https"):
         out.append("# " + line)
-    else:
-        out.append(line)
+        continue
+    out.append(line)
 p.write_text("\n".join(out) + "\n")
 PY
-    log "neutered :443 listener + ssl_* directives in nginx config"
+    log "neutered :443 listener + ssl_* directives + HTTPS redirect in nginx config"
 fi
 
 # Force prosody to log to stdout so s6 captures it. The log directive
