@@ -205,18 +205,26 @@ PY
     log "neutered :443 listener + ssl_* directives in nginx config"
 fi
 
-# Force prosody to log to stdout so s6 captures it. The default
-# config logs to /var/log/prosody/prosody.log which is invisible.
+# Force prosody to log to stdout so s6 captures it. The log directive
+# must live in the *global* section -- above any VirtualHost or
+# Component -- or prosodyctl treats it as host-scoped and emits a
+# warning. Insert before the first VirtualHost/Component/Include
+# directive, or prepend to the top of the file if none exists.
 PROSODY_MAIN_CFG="/etc/prosody/prosody.cfg.lua"
 if ! grep -q -- "-- openhost-jitsi: stdout log" "$PROSODY_MAIN_CFG"; then
-    cat >> "$PROSODY_MAIN_CFG" <<'EOF'
-
--- openhost-jitsi: stdout log (so s6 captures prosody output)
-log = {
-    { to = "console"; levels = "info" };
-}
-EOF
-    log "added console log to prosody main config"
+    python3 <<PY
+import pathlib, re
+p = pathlib.Path("$PROSODY_MAIN_CFG")
+text = p.read_text()
+inject = '\n-- openhost-jitsi: stdout log (so s6 captures prosody output)\nlog = { { to = "console"; levels = "info" } }\n\n'
+m = re.search(r'^(VirtualHost|Component|Include)\b', text, re.MULTILINE)
+if m:
+    text = text[:m.start()] + inject + text[m.start():]
+else:
+    text = inject + text
+p.write_text(text)
+PY
+    log "added console log to prosody main config (global scope)"
 fi
 
 # Make sure nginx doesn't try to open syslog on a socket that doesn't
