@@ -124,15 +124,17 @@ rename_placeholder() {
 }
 
 shopt -s nullglob
+# Literal explicit paths first, then globbed sweeps. The globs catch
+# auxiliary files the jitsi postinst creates (auth.*, *.cnf, extra
+# copies under /etc/prosody/certs and /var/lib/prosody) that don't
+# follow a single naming pattern.
 for f in /etc/prosody/conf.d/$PLACEHOLDER.cfg.lua \
          /etc/prosody/conf.avail/$PLACEHOLDER.cfg.lua \
          /etc/nginx/sites-available/$PLACEHOLDER.conf \
          /etc/nginx/sites-enabled/$PLACEHOLDER.conf \
          /etc/jitsi/meet/$PLACEHOLDER-config.js \
-         /etc/jitsi/meet/$PLACEHOLDER.crt \
-         /etc/jitsi/meet/$PLACEHOLDER.key \
-         /etc/prosody/certs/$PLACEHOLDER.key \
-         /etc/prosody/certs/$PLACEHOLDER.crt \
+         /etc/jitsi/meet/*$PLACEHOLDER* \
+         /etc/prosody/certs/*$PLACEHOLDER* \
          /var/lib/prosody/*$PLACEHOLDER*; do
     rename_placeholder "$f"
 done
@@ -331,5 +333,10 @@ fi
 
 # Prosody wants a few directories to exist under the new location.
 chown -R prosody:prosody "$PROSODY_DATA_DIR" || true
+
+# /var/run/prosody is where prosody writes its pidfile + unix sockets;
+# it's a tmpfs that's empty at container start.
+mkdir -p /var/run/prosody /var/log/prosody
+chown -R prosody:prosody /var/run/prosody /var/log/prosody
 
 log "jitsi runtime config complete"
