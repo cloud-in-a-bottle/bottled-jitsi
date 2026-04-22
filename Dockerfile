@@ -65,17 +65,17 @@ RUN curl -sSL https://download.jitsi.org/jitsi-key.gpg.key \
 # OpenHost's Caddy terminates real TLS in front of us -- we never serve
 # TLS directly from nginx inside this container.
 
-RUN echo "jitsi-videobridge jitsi-videobridge/jvb-hostname string localhost" | debconf-set-selections && \
-    echo "jitsi-meet jitsi-meet/jvb-hostname string localhost" | debconf-set-selections && \
-    echo "jitsi-meet-web-config jitsi-meet/jvb-hostname string localhost" | debconf-set-selections && \
+# Use a placeholder hostname that doesn't collide with prosody's
+# built-in "localhost" VirtualHost -- the "invalid" TLD is RFC-guaranteed
+# to never resolve. cont-init.d rewrites it to the real value on boot.
+RUN echo "jitsi-videobridge jitsi-videobridge/jvb-hostname string meet.invalid" | debconf-set-selections && \
+    echo "jitsi-meet jitsi-meet/jvb-hostname string meet.invalid" | debconf-set-selections && \
+    echo "jitsi-meet-web-config jitsi-meet/jvb-hostname string meet.invalid" | debconf-set-selections && \
     echo "jitsi-meet-web-config jitsi-meet/cert-choice select Generate a new self-signed certificate (You will later get a chance to obtain a Let's encrypt certificate)" | debconf-set-selections && \
-    echo "jicofo jitsi-videobridge/jvb-hostname string localhost" | debconf-set-selections
+    echo "jicofo jitsi-videobridge/jvb-hostname string meet.invalid" | debconf-set-selections
 
-# Prosody's postinst creates /etc/prosody/conf.avail/localhost.cfg.lua
-# when the installer's default server name resolves to localhost.
-# jitsi-meet-prosody's postinst greps that file, so prosody must be
-# installed + configured *before* the jitsi metapackage. Install in
-# two passes.
+# Install prosody first (not as part of jitsi-meet) so its postinst
+# completes cleanly and puts /etc/prosody/prosody.cfg.lua in place.
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
         lua5.2 \
@@ -83,15 +83,18 @@ RUN apt-get update && \
         nginx-full \
     && rm -rf /var/lib/apt/lists/*
 
-# Sanity: prosody's per-host config must exist before jitsi-meet's
-# postinst runs. If it's somehow missing (e.g. prosody's default
-# template changed), create a stub. The entrypoint rewrites this
-# anyway once we know the real hostname.
-RUN mkdir -p /etc/prosody/conf.avail /etc/prosody/conf.d && \
-    touch /etc/prosody/conf.avail/localhost.cfg.lua && \
-    ln -sf /etc/prosody/conf.avail/localhost.cfg.lua \
-           /etc/prosody/conf.d/localhost.cfg.lua
+# jitsi-meet-prosody's postinst tries to call prosodyctl, which in
+# turn needs /etc/prosody/prosody.cfg.lua to resolve the host it's
+# about to configure. Make sure the expected conf.d include directive
+# is present (prosody 13 upstream has it, but earlier Debian builds
+# don't).
+RUN if ! grep -q 'Include "conf.d/\*.cfg.lua"' /etc/prosody/prosody.cfg.lua; then \
+        printf '\nInclude "conf.d/*.cfg.lua"\n' >> /etc/prosody/prosody.cfg.lua; \
+    fi && \
+    mkdir -p /etc/prosody/conf.avail /etc/prosody/conf.d
 
+# Now install jitsi-meet, which pulls in jitsi-meet-prosody,
+# jitsi-meet-web-config, jitsi-videobridge2, jicofo, etc.
 RUN apt-get update && \
     apt-get install -y --no-install-recommends jitsi-meet && \
     rm -rf /var/lib/apt/lists/*

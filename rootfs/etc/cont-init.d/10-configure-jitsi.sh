@@ -61,43 +61,54 @@ rename_host_file() {
     fi
 }
 
-for f in /etc/prosody/conf.d/localhost.cfg.lua \
-         /etc/prosody/conf.avail/localhost.cfg.lua \
-         /etc/nginx/sites-available/localhost.conf \
-         /etc/nginx/sites-enabled/localhost.conf \
-         /etc/jitsi/meet/localhost-config.js; do
-    [[ -e "$f" ]] || continue
-    ext="${f##*localhost}"  # e.g. ".cfg.lua" or "-config.js"
-    rename_host_file "$f" "$ext"
-done
+# The build used PLACEHOLDER as the debconf hostname; cont-init
+# swaps every occurrence (filenames + file contents) to the real
+# PUBLIC_URL hostname. Keep this in sync with the Dockerfile's
+# debconf-set-selections lines.
+PLACEHOLDER="meet.invalid"
 
-# The per-host SSL cert files created by the installer are also named
-# after the placeholder. We never actually serve TLS from inside the
-# container (OpenHost terminates TLS upstream) so we just silence their
-# absence; nginx's config will reference /etc/ssl/certs/<host>.crt
-# which won't exist. Handle both patterns (rename if present, ignore
-# if missing).
-for f in /etc/jitsi/meet/localhost.crt /etc/jitsi/meet/localhost.key; do
-    [[ -e "$f" ]] || continue
-    mv "$f" "$(echo "$f" | sed "s#/localhost#/$HOSTNAME#")"
-done
+rename_placeholder() {
+    local src="$1"
+    local dst="${src//$PLACEHOLDER/$HOSTNAME}"
+    if [[ "$src" != "$dst" && -e "$src" ]]; then
+        mv "$src" "$dst"
+        log "renamed $(basename "$src") -> $(basename "$dst")"
+    fi
+}
 
-# Rewrite every remaining literal "localhost" reference in the configs
-# the installer wrote. We scope the rewrite to files the Jitsi postinst
-# actually touches; global sed across /etc would eat things like
-# loopback bindings.
+shopt -s nullglob
+for f in /etc/prosody/conf.d/$PLACEHOLDER.cfg.lua \
+         /etc/prosody/conf.avail/$PLACEHOLDER.cfg.lua \
+         /etc/nginx/sites-available/$PLACEHOLDER.conf \
+         /etc/nginx/sites-enabled/$PLACEHOLDER.conf \
+         /etc/jitsi/meet/$PLACEHOLDER-config.js \
+         /etc/jitsi/meet/$PLACEHOLDER.crt \
+         /etc/jitsi/meet/$PLACEHOLDER.key \
+         /etc/prosody/certs/$PLACEHOLDER.key \
+         /etc/prosody/certs/$PLACEHOLDER.crt \
+         /var/lib/prosody/*$PLACEHOLDER*; do
+    rename_placeholder "$f"
+done
+shopt -u nullglob
+
+# Rewrite every remaining literal PLACEHOLDER reference in configs
+# the installer wrote. Scoped tightly so we don't accidentally rewrite
+# unrelated files.
 for f in \
     /etc/nginx/sites-available/"$HOSTNAME".conf \
     /etc/nginx/sites-enabled/"$HOSTNAME".conf \
     /etc/prosody/conf.d/"$HOSTNAME".cfg.lua \
     /etc/prosody/conf.avail/"$HOSTNAME".cfg.lua \
-    /etc/jitsi/meet/"$HOSTNAME"-config.js ; do
+    /etc/jitsi/meet/"$HOSTNAME"-config.js \
+    /etc/jitsi/videobridge/jvb.conf \
+    /etc/jitsi/videobridge/sip-communicator.properties \
+    /etc/jitsi/jicofo/jicofo.conf \
+    /etc/jitsi/jicofo/sip-communicator.properties ; do
     [[ -f "$f" ]] || continue
-    # Only replace *fully-qualified* localhost references to avoid
-    # rewriting '127.0.0.1'-paired "localhost" bindings used for
-    # prosody's per-component inter-service traffic.
-    sed -i "s/\blocalhost\b/$HOSTNAME/g" "$f"
-    log "rewrote hostname in $f"
+    if grep -q "$PLACEHOLDER" "$f" 2>/dev/null; then
+        sed -i "s/$PLACEHOLDER/$HOSTNAME/g" "$f"
+        log "rewrote hostname in $f"
+    fi
 done
 
 # ---------------------------------------------------------------- TLS off
