@@ -50,9 +50,9 @@ ARG DEBIAN_FRONTEND=noninteractive
 # and we don't want the postinst-generated /etc/prosody cluttering
 # things up.
 
-RUN curl -sSL https://prosody.im/files/prosody-debian-packages.key \
-        -o /usr/share/keyrings/prosody.gpg.asc && \
-    echo "deb [signed-by=/usr/share/keyrings/prosody.gpg.asc] https://packages.prosody.im/debian bookworm main" \
+RUN curl -sSL https://prosody.im/files/prosody-debian-packages.key | \
+        gpg --dearmor -o /usr/share/keyrings/prosody.gpg && \
+    echo "deb [signed-by=/usr/share/keyrings/prosody.gpg] https://packages.prosody.im/debian bookworm main" \
         > /etc/apt/sources.list.d/prosody.list
 
 RUN apt-dpkg-wrap apt-get update && \
