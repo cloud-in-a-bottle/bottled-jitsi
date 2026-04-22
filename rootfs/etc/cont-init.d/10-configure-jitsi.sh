@@ -217,10 +217,14 @@ for line in text.splitlines():
         continue
 
     if in_server and stripped.startswith("listen") and "443" in stripped:
-        # Rewrite a :443 server block to listen on an unused
-        # localhost port. Keeps the block syntactically valid but
-        # never receives traffic.
-        out.append("    listen 127.0.0.1:65443;  # was: " + stripped)
+        # Rewrite both listen directives to unique unused localhost
+        # bindings. Keeps the block syntactically valid but never
+        # receives traffic. Using different (ip:port) pairs so nginx
+        # doesn't complain about duplicate listens.
+        if "[::]" in stripped:
+            out.append("    listen [::1]:65444;  # was: " + stripped)
+        else:
+            out.append("    listen 127.0.0.1:65443;  # was: " + stripped)
         server_has_443 = True
         depth += depth_delta
         continue
