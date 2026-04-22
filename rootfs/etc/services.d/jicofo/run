@@ -27,4 +27,15 @@ JICOFO_HOME_DIR_NAME="jicofo"
 # shellcheck disable=SC1091
 [[ -f /etc/jitsi/jicofo/config ]] && . /etc/jitsi/jicofo/config
 
-exec /usr/share/jicofo/jicofo.sh
+for candidate in \
+    /usr/share/jicofo/jicofo.sh \
+    /opt/jicofo/jicofo.sh \
+    /usr/bin/jicofo; do
+    if [[ -x "$candidate" ]]; then
+        echo "[jicofo] launching $candidate"
+        exec "$candidate"
+    fi
+done
+echo "[jicofo] FATAL: could not find jicofo launcher" >&2
+ls -la /usr/share/ | grep -i jit >&2
+exit 127

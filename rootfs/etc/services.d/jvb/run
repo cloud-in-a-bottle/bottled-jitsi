@@ -15,4 +15,18 @@ done
 # shellcheck disable=SC1091
 [[ -f /etc/jitsi/videobridge/config ]] && . /etc/jitsi/videobridge/config
 
-exec /usr/share/jitsi-videobridge2/jvb.sh
+# Find the JVB launcher -- its install path has drifted across
+# versions. Check the most likely locations.
+for candidate in \
+    /usr/share/jitsi-videobridge2/jvb.sh \
+    /usr/share/jitsi-videobridge/jvb.sh \
+    /opt/jitsi-videobridge/jvb.sh \
+    /usr/bin/jitsi-videobridge; do
+    if [[ -x "$candidate" ]]; then
+        echo "[jvb] launching $candidate"
+        exec "$candidate"
+    fi
+done
+echo "[jvb] FATAL: could not find jvb launcher in any expected path" >&2
+ls -la /usr/share/ | grep -i jitsi >&2
+exit 127

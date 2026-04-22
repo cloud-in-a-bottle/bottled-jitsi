@@ -169,6 +169,12 @@ done
 # would bind to :443 or reference cert files. nginx will still parse
 # the block but the `listen` directive will be gone, so it becomes a
 # harmless catch-all that never gets traffic.
+# Disable Debian's default "Welcome to nginx" vhost. It listens on
+# :80 as default_server, which on some nginx builds wins over named
+# vhosts even for Host-matching requests. We want our jitsi vhost to
+# be the only thing answering.
+rm -f /etc/nginx/sites-enabled/default
+
 NGINX_CONF="/etc/nginx/sites-available/$HOSTNAME.conf"
 if [[ -f "$NGINX_CONF" ]]; then
     # Comment out any line that binds to :443 or references SSL certs
@@ -197,6 +203,20 @@ for line in text.splitlines():
 p.write_text("\n".join(out) + "\n")
 PY
     log "neutered :443 listener + ssl_* directives in nginx config"
+fi
+
+# Force prosody to log to stdout so s6 captures it. The default
+# config logs to /var/log/prosody/prosody.log which is invisible.
+PROSODY_MAIN_CFG="/etc/prosody/prosody.cfg.lua"
+if ! grep -q -- "-- openhost-jitsi: stdout log" "$PROSODY_MAIN_CFG"; then
+    cat >> "$PROSODY_MAIN_CFG" <<'EOF'
+
+-- openhost-jitsi: stdout log (so s6 captures prosody output)
+log = {
+    { to = "console"; levels = "info" };
+}
+EOF
+    log "added console log to prosody main config"
 fi
 
 # Make sure nginx doesn't try to open syslog on a socket that doesn't
