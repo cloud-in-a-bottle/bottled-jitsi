@@ -257,6 +257,33 @@ PY
     log "neutered :443 listener + ssl_* directives + HTTPS redirect in nginx config"
 fi
 
+# Make sure prosody's HTTP port (for BOSH/XMPP-WS) is bound on 5280.
+# jitsi's nginx vhost proxies /http-bind and /xmpp-websocket to
+# prosody's HTTP listener on that port. Prosody 13 defaults to
+# serving these on HTTPS-only; jitsi expects plain-HTTP on 5280.
+VHOST_CFG="/etc/prosody/conf.avail/$HOSTNAME.cfg.lua"
+if [[ -f "$VHOST_CFG" ]] && ! grep -q "^http_ports" "$VHOST_CFG"; then
+    python3 <<PY
+import pathlib
+p = pathlib.Path("$VHOST_CFG")
+text = p.read_text()
+# Insert before the first VirtualHost so these settings are global.
+inject = (
+    'http_ports = { 5280 }\n'
+    'https_ports = { }\n'
+    'trusted_proxies = { "127.0.0.1", "::1" }\n\n'
+)
+import re
+m = re.search(r'^VirtualHost\s', text, re.MULTILINE)
+if m:
+    text = text[:m.start()] + inject + text[m.start():]
+else:
+    text = inject + text
+p.write_text(text)
+PY
+    log "set http_ports/https_ports/trusted_proxies in prosody vhost config"
+fi
+
 # Force prosody to log to stdout so s6 captures it. The log directive
 # must live in the *global* section -- above any VirtualHost or
 # Component -- or prosodyctl treats it as host-scoped and emits a
