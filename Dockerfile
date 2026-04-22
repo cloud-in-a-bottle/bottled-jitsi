@@ -21,7 +21,7 @@
 ARG JITSI_TAG=stable-9955
 
 # Named stages we'll COPY rootfs trees from.
-FROM jitsi/base:${JITSI_TAG} AS web-src
+FROM jitsi/web:${JITSI_TAG} AS web-src
 FROM jitsi/prosody:${JITSI_TAG} AS prosody-src
 FROM jitsi/jicofo:${JITSI_TAG} AS jicofo-src
 FROM jitsi/jvb:${JITSI_TAG} AS jvb-src
