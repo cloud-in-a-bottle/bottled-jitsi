@@ -71,13 +71,30 @@ RUN echo "jitsi-videobridge jitsi-videobridge/jvb-hostname string localhost" | d
     echo "jitsi-meet-web-config jitsi-meet/cert-choice select Generate a new self-signed certificate (You will later get a chance to obtain a Let's encrypt certificate)" | debconf-set-selections && \
     echo "jicofo jitsi-videobridge/jvb-hostname string localhost" | debconf-set-selections
 
+# Prosody's postinst creates /etc/prosody/conf.avail/localhost.cfg.lua
+# when the installer's default server name resolves to localhost.
+# jitsi-meet-prosody's postinst greps that file, so prosody must be
+# installed + configured *before* the jitsi metapackage. Install in
+# two passes.
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
         lua5.2 \
         prosody \
         nginx-full \
-        jitsi-meet \
     && rm -rf /var/lib/apt/lists/*
+
+# Sanity: prosody's per-host config must exist before jitsi-meet's
+# postinst runs. If it's somehow missing (e.g. prosody's default
+# template changed), create a stub. The entrypoint rewrites this
+# anyway once we know the real hostname.
+RUN mkdir -p /etc/prosody/conf.avail /etc/prosody/conf.d && \
+    touch /etc/prosody/conf.avail/localhost.cfg.lua && \
+    ln -sf /etc/prosody/conf.avail/localhost.cfg.lua \
+           /etc/prosody/conf.d/localhost.cfg.lua
+
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends jitsi-meet && \
+    rm -rf /var/lib/apt/lists/*
 
 # -----------------------------------------------------------------------------
 # Remove the systemd units the packages dropped (we don't run systemd),
