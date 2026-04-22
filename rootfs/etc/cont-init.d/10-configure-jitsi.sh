@@ -216,7 +216,7 @@ if ! grep -q -- "-- openhost-jitsi: stdout log" "$PROSODY_MAIN_CFG"; then
 import pathlib, re
 p = pathlib.Path("$PROSODY_MAIN_CFG")
 text = p.read_text()
-inject = '\n-- openhost-jitsi: stdout log (so s6 captures prosody output)\nlog = { { to = "console"; levels = "info" } }\n\n'
+inject = '\n-- openhost-jitsi: stdout log (so s6 captures prosody output)\nlog = { { to = "console"; levels = { min = "debug" } } }\n\n'
 m = re.search(r'^(VirtualHost|Component|Include)\b', text, re.MULTILINE)
 if m:
     text = text[:m.start()] + inject + text[m.start():]
