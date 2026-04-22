@@ -4,4 +4,7 @@
 # package to listen on :80 (and :443, but the cont-init rewriter
 # strips :443 since OpenHost terminates TLS upstream).
 exec 2>&1
+echo "[nginx] sites-enabled: $(ls /etc/nginx/sites-enabled/ 2>&1)"
+echo "[nginx] about to start; config -T check:"
+nginx -T 2>&1 | grep -E "server_name|listen\s+[0-9]|root " | head -20
 exec /usr/sbin/nginx -g "daemon off;"
