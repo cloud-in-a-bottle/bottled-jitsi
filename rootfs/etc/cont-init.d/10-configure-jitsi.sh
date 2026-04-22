@@ -196,13 +196,36 @@ import pathlib
 p = pathlib.Path("$NGINX_CONF")
 text = p.read_text()
 out = []
-skip_redirect_block = False
+# Track which server{} block we're inside so we can rewrite the 443
+# block's listen directive to bind to a harmless unused localhost
+# port. Otherwise commenting out just the :443 listen leaves the
+# block listening on :80 (nginx's default), which collides with our
+# real :80 block.
+depth = 0
+in_server = False
+server_has_443 = False
 for line in text.splitlines():
     stripped = line.lstrip()
+    # Track braces first.
+    depth_delta = line.count("{") - line.count("}")
 
-    # Comment out anything tied to TLS.
-    if (stripped.startswith("listen") and "443" in stripped) \
-       or stripped.startswith("ssl_certificate") \
+    if stripped.startswith("server {") or stripped == "server {":
+        in_server = True
+        server_has_443 = False
+        out.append(line)
+        depth += depth_delta
+        continue
+
+    if in_server and stripped.startswith("listen") and "443" in stripped:
+        # Rewrite a :443 server block to listen on an unused
+        # localhost port. Keeps the block syntactically valid but
+        # never receives traffic.
+        out.append("    listen 127.0.0.1:65443;  # was: " + stripped)
+        server_has_443 = True
+        depth += depth_delta
+        continue
+
+    if stripped.startswith("ssl_certificate") \
        or stripped.startswith("ssl_certificate_key") \
        or stripped.startswith("ssl_trusted_certificate") \
        or stripped.startswith("ssl_dhparam") \
@@ -212,8 +235,16 @@ for line in text.splitlines():
        or stripped.startswith("ssl_session_") \
        or stripped.startswith("return 301 https"):
         out.append("# " + line)
+        depth += depth_delta
         continue
+
+    # If we're exiting a server block, reset state.
+    if in_server and depth + depth_delta <= 0:
+        in_server = False
+        server_has_443 = False
+
     out.append(line)
+    depth += depth_delta
 p.write_text("\n".join(out) + "\n")
 PY
     log "neutered :443 listener + ssl_* directives + HTTPS redirect in nginx config"
