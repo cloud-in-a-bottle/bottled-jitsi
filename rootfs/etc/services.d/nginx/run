@@ -6,8 +6,10 @@
 exec 2>&1
 echo "[nginx] sites-enabled: $(ls /etc/nginx/sites-enabled/ 2>&1)"
 echo "[nginx] conf.d: $(ls /etc/nginx/conf.d/ 2>&1)"
-echo "[nginx] nginx -T full output (first 200 lines):"
-nginx -T 2>&1 | head -200 | sed 's/^/[nginx -T] /'
+echo "[nginx] modules-enabled:"
+ls /etc/nginx/modules-enabled/ 2>&1
+echo "[nginx] searching for other default_server:"
+grep -rn "default_server\|/usr/share/nginx" /etc/nginx/ 2>&1 | head -10
 echo "[nginx] ls /usr/share/jitsi-meet/:"
 ls /usr/share/jitsi-meet/ 2>&1 | head -10 | sed 's/^/[jitsi-meet] /'
 echo "[nginx] full dump of :80 server block in the active vhost:"
