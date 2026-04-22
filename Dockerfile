@@ -128,7 +128,7 @@ RUN tar -C / -Jxpf /tmp/s6-overlay-noarch.tar.xz && \
 COPY rootfs/ /
 
 RUN chmod +x /etc/cont-init.d/*.sh \
-             /etc/cont-init.d/_discover_hostname.py \
+             /usr/local/lib/jitsi/discover_hostname.py \
              /etc/services.d/*/run \
              /etc/services.d/*/finish
 

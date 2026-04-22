@@ -61,7 +61,7 @@ resolve_hostname() {
     # listener on :80 that captures X-Forwarded-Host from the first
     # request and exits. Uses stdlib only (no nginx yet).
     log "no hostname set; waiting for first HTTP request to discover it" >&2
-    python3 /etc/cont-init.d/_discover_hostname.py "$CACHED_HOSTNAME_FILE" >&2
+    python3 /usr/local/lib/jitsi/discover_hostname.py "$CACHED_HOSTNAME_FILE" >&2
     cat "$CACHED_HOSTNAME_FILE"
 }
 
