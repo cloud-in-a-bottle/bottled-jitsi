@@ -195,6 +195,12 @@ if [[ -f "$NGINX_CONF" ]]; then
 import pathlib
 p = pathlib.Path("$NGINX_CONF")
 text = p.read_text()
+# Mark the real :80 server block as default_server so it answers
+# requests that arrive without a Host: header (which is exactly what
+# OpenHost's router does -- it strips Host and passes X-Forwarded-Host
+# only).
+text = text.replace("listen 80;", "listen 80 default_server;", 1)
+text = text.replace("listen [::]:80;", "listen [::]:80 default_server;", 1)
 out = []
 # Track which server{} block we're inside so we can rewrite the 443
 # block's listen directive to bind to a harmless unused localhost
