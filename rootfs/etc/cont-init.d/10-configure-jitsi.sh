@@ -103,11 +103,6 @@ rename_host_file() {
 # debconf-set-selections lines.
 PLACEHOLDER="meet.invalid"
 
-log "debug: nginx sites-available: $(ls /etc/nginx/sites-available/ 2>&1)"
-log "debug: nginx sites-enabled:   $(ls /etc/nginx/sites-enabled/ 2>&1)"
-log "debug: /etc/jitsi/meet:       $(ls /etc/jitsi/meet/ 2>&1)"
-log "debug: /etc/prosody/conf.d:   $(ls /etc/prosody/conf.d/ 2>&1)"
-
 rename_placeholder() {
     local src="$1"
     local dst="${src//$PLACEHOLDER/$HOSTNAME}"

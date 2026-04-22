@@ -68,13 +68,18 @@ RUN curl -sSL https://download.jitsi.org/jitsi-key.gpg.key \
 # TLS directly from nginx inside this container.
 
 # Use a placeholder hostname that doesn't collide with prosody's
-# built-in "localhost" VirtualHost -- the "invalid" TLD is RFC-guaranteed
-# to never resolve. cont-init.d rewrites it to the real value on boot.
+# built-in "localhost" VirtualHost -- the ".invalid" TLD is RFC-2606
+# reserved and guaranteed to never resolve. cont-init.d rewrites it
+# to the real value on boot.
+#
+# IMPORTANT: only preseed jitsi-videobridge/jvb-hostname. The
+# jitsi-meet-web-config postinst treats a preseeded
+# jitsi-meet/jvb-hostname as "previous hostname" (JVB_HOSTNAME_OLD),
+# which short-circuits the first-install code path and prevents the
+# nginx vhost and config.js from being created. Leaving it unset
+# forces the "fresh install" branch for all three packages.
 RUN echo "jitsi-videobridge jitsi-videobridge/jvb-hostname string meet.invalid" | debconf-set-selections && \
-    echo "jitsi-meet jitsi-meet/jvb-hostname string meet.invalid" | debconf-set-selections && \
-    echo "jitsi-meet-web-config jitsi-meet/jvb-hostname string meet.invalid" | debconf-set-selections && \
-    echo "jitsi-meet-web-config jitsi-meet/cert-choice select Generate a new self-signed certificate (You will later get a chance to obtain a Let's encrypt certificate)" | debconf-set-selections && \
-    echo "jicofo jitsi-videobridge/jvb-hostname string meet.invalid" | debconf-set-selections
+    echo "jitsi-meet-web-config jitsi-meet/cert-choice select Generate a new self-signed certificate (You will later get a chance to obtain a Let's encrypt certificate)" | debconf-set-selections
 
 # Install prosody first (not as part of jitsi-meet) so its postinst
 # completes cleanly and puts /etc/prosody/prosody.cfg.lua in place.
