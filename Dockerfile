@@ -61,7 +61,6 @@ RUN apt-dpkg-wrap apt-get update && \
         python3 openssl \
         jitsi-meet-web \
         lua5.4 prosody \
-        jitsi-meet-prosody \
         lua-cyrussasl lua-inspect lua-ldap lua-luaossl lua-sec lua-unbound \
         libldap-common sasl2-bin libsasl2-modules-ldap \
         jicofo \
@@ -69,14 +68,17 @@ RUN apt-dpkg-wrap apt-get update && \
     apt-cleanup && \
     rm -rf /var/lib/apt/lists/*
 
-# Move the prosody plugins out of /usr/share/jitsi-meet/ so the
-# prosody config's plugin_paths can find them at /prosody-plugins,
-# exactly as the docker-jitsi-meet image does.  Drop mod_smacks
-# because it conflicts with prosody 13's built-in version.
-RUN rm -f /usr/share/jitsi-meet/prosody-plugins/mod_smacks.lua && \
-    mv /usr/share/jitsi-meet/prosody-plugins /prosody-plugins && \
+# Pull jitsi-meet-prosody's plugin bundle without running the
+# package's postinst (which assumes an interactive debconf run and
+# an already-working prosody). Matches what jitsi/prosody does.
+RUN apt-dpkg-wrap apt-get update && \
+    apt-dpkg-wrap apt-get -d install -y jitsi-meet-prosody && \
+    dpkg -x /var/cache/apt/archives/jitsi-meet-prosody*.deb /tmp/pkg && \
+    rm /tmp/pkg/usr/share/jitsi-meet/prosody-plugins/mod_smacks.lua && \
+    mv /tmp/pkg/usr/share/jitsi-meet/prosody-plugins /prosody-plugins && \
+    rm -rf /tmp/pkg /var/cache/apt/archives/*.deb /var/lib/apt/lists/* && \
     mkdir -p /prosody-plugins-custom /prosody-plugins-contrib && \
-    chown prosody:prosody /prosody-plugins /prosody-plugins-custom /prosody-plugins-contrib
+    chown -R prosody:prosody /prosody-plugins /prosody-plugins-custom /prosody-plugins-contrib
 
 # The apt-installed /etc/prosody/*.cfg.lua files are a red herring:
 # our boot-time cont-init renders fresh configs into /config/prosody/
