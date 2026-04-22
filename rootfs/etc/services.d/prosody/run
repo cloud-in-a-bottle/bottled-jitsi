@@ -13,7 +13,14 @@ exec 2>&1
 echo "[prosody] starting; conf.d contents:"
 ls -la /etc/prosody/conf.d/ /etc/prosody/certs/ /var/lib/prosody/ 2>&1 | head -30
 echo "[prosody] tail of main cfg:"
-tail -5 /etc/prosody/prosody.cfg.lua 2>&1
+tail -15 /etc/prosody/prosody.cfg.lua 2>&1 | sed 's/^/[prosody cfg] /'
+echo "[prosody] head of vhost cfg:"
+head -15 /etc/prosody/conf.d/*.cfg.lua 2>&1 | sed 's/^/[prosody vhost] /'
 echo "[prosody] launching prosody as prosody user"
 
+# Ensure prosody user can read the config file.
+chown -h prosody:prosody /etc/prosody/conf.d/*.cfg.lua 2>/dev/null || true
+
+# Capture prosody stderr explicitly by using 'prosody -D' which
+# forces it to the foreground AND routes output to our stderr/stdout.
 exec s6-setuidgid prosody /usr/bin/prosody --foreground 2>&1
