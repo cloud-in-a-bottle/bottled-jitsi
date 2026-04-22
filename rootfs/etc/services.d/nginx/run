@@ -1,0 +1,7 @@
+#!/bin/bash
+# Nginx serves the Jitsi Meet SPA + proxies BOSH / XMPP-WS / colibri-ws
+# to prosody and JVB. Configured by the jitsi-meet-web-config Debian
+# package to listen on :80 (and :443, but the cont-init rewriter
+# strips :443 since OpenHost terminates TLS upstream).
+exec 2>&1
+exec /usr/sbin/nginx -g "daemon off;"

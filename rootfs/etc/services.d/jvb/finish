@@ -1,0 +1,5 @@
+#!/bin/bash
+# JVB is critical -- without it there's no media.
+exec 0<&-
+echo "$1" > /run/s6-linux-init-container-results/exitcode
+exec /run/s6/basedir/bin/halt

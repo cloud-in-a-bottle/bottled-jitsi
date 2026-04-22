@@ -1,0 +1,18 @@
+#!/bin/bash
+# jitsi-videobridge2 -- the SFU that actually forwards RTP media
+# between participants. Listens on JVB_PORT/udp (default 9500 here)
+# for media and connects out to prosody over XMPP for control.
+exec 2>&1
+
+# Give prosody a head start just like jicofo does.
+for _ in $(seq 1 30); do
+    if (echo >/dev/tcp/127.0.0.1/5222) 2>/dev/null; then
+        break
+    fi
+    sleep 1
+done
+
+# shellcheck disable=SC1091
+[[ -f /etc/jitsi/videobridge/config ]] && . /etc/jitsi/videobridge/config
+
+exec /usr/share/jitsi-videobridge2/jvb.sh

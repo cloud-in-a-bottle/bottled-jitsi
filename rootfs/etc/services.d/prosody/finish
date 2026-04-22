@@ -1,0 +1,6 @@
+#!/bin/bash
+# Prosody is critical -- if it exits, nothing else in the stack can
+# function. Bring the container down so OpenHost restarts us fresh.
+exec 0<&-
+echo "$1" > /run/s6-linux-init-container-results/exitcode
+exec /run/s6/basedir/bin/halt

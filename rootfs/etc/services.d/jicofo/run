@@ -1,0 +1,30 @@
+#!/bin/bash
+# Jicofo (JItsi COnference FOcus) -- XMPP client that allocates and
+# manages conferences, pairs each room with a JVB, handles the focus
+# role for SDP negotiation. Depends on prosody being up.
+exec 2>&1
+
+# Wait briefly for prosody to finish starting. Jicofo retries connects
+# but the initial stderr noise is cleaner if we give prosody a head
+# start. s6 brings services up in parallel otherwise.
+for _ in $(seq 1 30); do
+    if ss -ln 2>/dev/null | grep -q ':5222 ' \
+       || nc -z 127.0.0.1 5222 2>/dev/null \
+       || (echo >/dev/tcp/127.0.0.1/5222) 2>/dev/null; then
+        break
+    fi
+    sleep 1
+done
+
+# Use the Debian package's launcher -- it assembles the right classpath,
+# picks up /etc/jitsi/jicofo/*, and reads /etc/jitsi/jicofo/config for
+# shared secrets.
+JICOFO_HOME_DIR_LOCATION="/etc/jitsi"
+JICOFO_HOME_DIR_NAME="jicofo"
+
+# Source the package's env file for the component password etc. The
+# Debian postinst writes this at /etc/jitsi/jicofo/config.
+# shellcheck disable=SC1091
+[[ -f /etc/jitsi/jicofo/config ]] && . /etc/jitsi/jicofo/config
+
+exec /usr/share/jicofo/jicofo.sh

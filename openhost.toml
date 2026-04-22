@@ -1,0 +1,41 @@
+[app]
+name = "jitsi"
+version = "0.1.0"
+description = "Jitsi Meet video conferencing: XMPP + jicofo + jitsi-videobridge + nginx in one container."
+
+[runtime.container]
+image = "Dockerfile"
+port = 80
+
+# Jitsi Videobridge media port. OpenHost only exposes extra ports in
+# the 9000-9999 range, so we pin JVB_PORT=9500 inside the container
+# and bind host port 9500/udp publicly. The host also gets 9500/tcp
+# which JVB does not use, but there is no harm in it.
+[[ports]]
+label = "jvb-media"
+container_port = 9500
+host_port = 9500
+
+[resources]
+# JVB + Jicofo are JVMs, Prosody is Lua, nginx is tiny. 3 GiB gives
+# everyone headroom for ~10 participants in a single room; bump this
+# if you expect more.
+memory_mb = 3072
+cpu_millicores = 2000
+
+[data]
+# Persistent data: generated shared secrets + prosody's flat-file
+# account store (if ever enabled). ~/config/ in the container maps
+# here so the same secrets survive restarts.
+app_data = true
+# Per-boot scratch: nginx cache, prosody runtime logs, JVB temp files.
+app_temp_data = true
+
+[routing]
+health_check = "/"
+# The Jitsi web frontend is, by design, publicly accessible: the whole
+# point is that random users you give a link to can join a meeting.
+# OpenHost's owner auth gate would block them. Expose everything as
+# public; Jitsi handles its own access control (room passwords,
+# lobbies, optional JWT auth).
+public_paths = ["/"]

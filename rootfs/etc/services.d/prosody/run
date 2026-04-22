@@ -1,0 +1,8 @@
+#!/bin/bash
+# Prosody XMPP server -- the signaling backbone jitsi-meet, jicofo,
+# and JVB all connect to. Runs on 5222 (c2s), 5269 (s2s), 5280
+# (BOSH/ws) on localhost only.
+exec 2>&1
+# Prosody forks by default; --foreground keeps it in the foreground
+# so s6 can supervise it.
+exec /usr/bin/prosody --foreground
