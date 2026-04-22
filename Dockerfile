@@ -1,152 +1,178 @@
-# Jitsi Meet — all four components in one container.
+# Jitsi Meet — all-in-one container.
 #
-# The official Jitsi project distributes an "official" Docker deployment
-# that uses docker-compose to run four separate containers. OpenHost's
-# model is strictly one-image-per-app, so we merge the four services
-# into a single container using the upstream Debian packages (the same
-# packages the apt quick-start guide uses) and supervise them with
-# s6-overlay.
+# Approach: take the four *official* Jitsi Docker images (jitsi/web,
+# jitsi/prosody, jitsi/jicofo, jitsi/jvb), install their Debian
+# packages into one combined image, and overlay the official
+# rootfs/ config templates from each image so prosody, jicofo, jvb
+# and nginx all come up in the same container under the existing
+# s6-overlay + tpl templating machinery.
 #
-# The trick that makes this small: Debian's post-install scripts
-# (jitsi-meet-web-config, jitsi-videobridge2, jicofo, prosody) read
-# debconf answers to generate every required config file. We pre-seed
-# debconf with a placeholder hostname at build time, then entrypoint.sh
-# rewrites the hostname in the generated files at runtime once we know
-# the real public URL. That way we don't have to hand-maintain config
-# templates the size of the upstream docker-jitsi-meet repo.
+# We target the `stable-9955` release tag. This matches the upstream
+# jitsi-meet Debian package versions (1.0.9955+).
+#
+# Why not install the Debian packages ourselves (as the earlier
+# version of this app did)?  Because the upstream `jitsi-meet-prosody`
+# postinst script doesn't set `http_default_host` or
+# `trusted_proxies` on prosody, which makes BOSH / XMPP-WS return 404
+# when proxied from nginx. The docker-image templates DO set these
+# correctly (see prosody/rootfs/defaults/conf.d/jitsi-meet.cfg.lua
+# line 77 and prosody/rootfs/defaults/prosody.cfg.lua line 154).
 
-FROM debian:bookworm-slim
+ARG JITSI_TAG=stable-9955
+
+# Named stages we'll COPY rootfs trees from.
+FROM jitsi/base:${JITSI_TAG} AS web-src
+FROM jitsi/prosody:${JITSI_TAG} AS prosody-src
+FROM jitsi/jicofo:${JITSI_TAG} AS jicofo-src
+FROM jitsi/jvb:${JITSI_TAG} AS jvb-src
+
+# Final image inherits from jitsi/base-java which already has:
+#   * s6-overlay v1 at /init (stage-2 init: cont-init.d -> services.d)
+#   * /usr/bin/tpl template renderer (jitsi/tpl v1.4.0)
+#   * /usr/bin/{apt-dpkg-wrap,apt-cleanup} helper wrappers
+#   * the jitsi/stable apt repo + debian bookworm-backports
+#   * openjdk-17 (needed for jicofo + jvb)
+#   * a cont-init that sets /etc/localtime from TZ
+FROM jitsi/base-java:${JITSI_TAG}
 
 ARG DEBIAN_FRONTEND=noninteractive
-ARG S6_OVERLAY_VERSION=3.2.0.2
 
-# -----------------------------------------------------------------------------
-# Base packages: a JDK (for prosody/jicofo/jvb dependencies), plus tooling
-# we need for config rewriting at runtime (jq for JSON, sed/awk, envsubst,
-# gettext-base provides envsubst).
-
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends \
-        ca-certificates \
-        curl \
-        gnupg2 \
-        apt-transport-https \
-        lsb-release \
-        openjdk-17-jre-headless \
-        gettext-base \
-        jq \
-        xz-utils \
-        procps \
-        iproute2 \
-        dnsutils \
-        sudo \
-        debconf-utils \
-        python3 \
-        netcat-openbsd \
-    && rm -rf /var/lib/apt/lists/*
-
-# -----------------------------------------------------------------------------
-# Add the Prosody and Jitsi apt repositories. Prosody's bookworm has 0.12.x
-# which Jitsi needs for the lobby/websocket features. The Jitsi repo hosts
-# jitsi-videobridge2, jicofo, and jitsi-meet itself.
-
-RUN curl -sSL https://prosody.im/files/prosody-debian-packages.key \
-        -o /usr/share/keyrings/prosody-debian-packages.key && \
-    echo "deb [signed-by=/usr/share/keyrings/prosody-debian-packages.key] http://packages.prosody.im/debian bookworm main" \
-        > /etc/apt/sources.list.d/prosody-debian-packages.list
-
-RUN curl -sSL https://download.jitsi.org/jitsi-key.gpg.key \
-        | gpg --dearmor > /usr/share/keyrings/jitsi-keyring.gpg && \
-    echo "deb [signed-by=/usr/share/keyrings/jitsi-keyring.gpg] https://download.jitsi.org stable/" \
-        > /etc/apt/sources.list.d/jitsi-stable.list
-
-# -----------------------------------------------------------------------------
-# Preseed debconf so jitsi-meet installs non-interactively. Hostname is a
-# placeholder; entrypoint.sh rewrites all generated files to the real
-# value on first boot. We opt for the self-signed cert path because
-# OpenHost's Caddy terminates real TLS in front of us -- we never serve
-# TLS directly from nginx inside this container.
-
-# Use a placeholder hostname that doesn't collide with prosody's
-# built-in "localhost" VirtualHost -- the ".invalid" TLD is RFC-2606
-# reserved and guaranteed to never resolve. cont-init.d rewrites it
-# to the real value on boot.
+# ---------------------------------------------------------------- packages
 #
-# IMPORTANT: only preseed jitsi-videobridge/jvb-hostname. The
-# jitsi-meet-web-config postinst treats a preseeded
-# jitsi-meet/jvb-hostname as "previous hostname" (JVB_HOSTNAME_OLD),
-# which short-circuits the first-install code path and prevents the
-# nginx vhost and config.js from being created. Leaving it unset
-# forces the "fresh install" branch for all three packages.
-RUN echo "jitsi-videobridge jitsi-videobridge/jvb-hostname string meet.invalid" | debconf-set-selections && \
-    echo "jitsi-meet-web-config jitsi-meet/cert-choice select Generate a new self-signed certificate (You will later get a chance to obtain a Let's encrypt certificate)" | debconf-set-selections
+# Add the prosody.im apt repo (prosody's default Debian package is too
+# old for Jitsi 13; the official jitsi/prosody image installs from this
+# repo and we match), then install every runtime daemon in one layer
+# so each package's postinst creates its users and groups correctly.
+#
+# jitsi-meet-prosody's postinst is run only to pull in the plugin
+# bundle; we immediately clear /etc/prosody afterwards since the
+# docker-jitsi-meet templates drop fresh configs into /config at boot
+# and we don't want the postinst-generated /etc/prosody cluttering
+# things up.
 
-# Install prosody first (not as part of jitsi-meet) so its postinst
-# completes cleanly and puts /etc/prosody/prosody.cfg.lua in place.
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends \
-        lua5.2 \
-        prosody \
-        nginx-full \
-    && rm -rf /var/lib/apt/lists/*
+RUN wget -qO- https://prosody.im/files/prosody-debian-packages.key \
+        > /etc/apt/trusted.gpg.d/prosody.asc && \
+    echo "deb https://packages.prosody.im/debian bookworm main" \
+        > /etc/apt/sources.list.d/prosody.list
 
-# jitsi-meet-prosody's postinst tries to call prosodyctl, which in
-# turn needs /etc/prosody/prosody.cfg.lua to resolve the host it's
-# about to configure. Make sure the expected conf.d include directive
-# is present (prosody 13 upstream has it, but earlier Debian builds
-# don't).
-RUN if ! grep -q 'Include "conf.d/\*.cfg.lua"' /etc/prosody/prosody.cfg.lua; then \
-        printf '\nInclude "conf.d/*.cfg.lua"\n' >> /etc/prosody/prosody.cfg.lua; \
-    fi && \
-    mkdir -p /etc/prosody/conf.avail /etc/prosody/conf.d
-
-# Now install jitsi-meet, which pulls in jitsi-meet-prosody,
-# jitsi-meet-web-config, jitsi-videobridge2, jicofo, etc.
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends jitsi-meet && \
+RUN apt-dpkg-wrap apt-get update && \
+    apt-dpkg-wrap apt-get install -y --no-install-recommends \
+        dnsutils cron socat curl jq nginx-extras \
+        python3 openssl \
+        jitsi-meet-web \
+        lua5.4 prosody \
+        jitsi-meet-prosody \
+        lua-cyrussasl lua-inspect lua-ldap lua-luaossl lua-sec lua-unbound \
+        libldap-common sasl2-bin libsasl2-modules-ldap \
+        jicofo \
+        jitsi-videobridge2 iproute2 libpcap0.8 && \
+    apt-cleanup && \
     rm -rf /var/lib/apt/lists/*
 
-# -----------------------------------------------------------------------------
-# Remove the systemd units the packages dropped (we don't run systemd),
-# disable nginx's default HTTPS listener (OpenHost terminates TLS), and
-# make jicofo/prosody/jvb log to stdout so s6 can capture them.
+# Move the prosody plugins out of /usr/share/jitsi-meet/ so the
+# prosody config's plugin_paths can find them at /prosody-plugins,
+# exactly as the docker-jitsi-meet image does.  Drop mod_smacks
+# because it conflicts with prosody 13's built-in version.
+RUN rm -f /usr/share/jitsi-meet/prosody-plugins/mod_smacks.lua && \
+    mv /usr/share/jitsi-meet/prosody-plugins /prosody-plugins && \
+    mkdir -p /prosody-plugins-custom /prosody-plugins-contrib && \
+    chown prosody:prosody /prosody-plugins /prosody-plugins-custom /prosody-plugins-contrib
 
-RUN rm -f /lib/systemd/system/jitsi-videobridge2.service \
-          /lib/systemd/system/jicofo.service \
-          /lib/systemd/system/prosody.service
+# The apt-installed /etc/prosody/*.cfg.lua files are a red herring:
+# our boot-time cont-init renders fresh configs into /config/prosody/
+# from the docker-image templates and points prosody at those via
+# --config. But we keep /etc/prosody itself around because prosodyctl
+# looks for some helper files there. Just clear out the VirtualHost
+# definitions to make sure they don't accidentally leak into prosody's
+# state.
+RUN rm -rf /etc/prosody/conf.avail /etc/prosody/conf.d /etc/prosody/prosody.cfg.lua && \
+    rm -f /etc/nginx/sites-enabled/default && \
+    rm -rf /etc/nginx/conf.d/*
 
-# -----------------------------------------------------------------------------
-# Install s6-overlay for process supervision. Each jitsi service gets a
-# tiny run script under /etc/services.d/, and the entrypoint rewrites
-# configs in /etc/cont-init.d before the services start.
+# ---------------------------------------------------------------- luarocks bits
+#
+# The prosody image builds a few lua modules (basexx, lua-cjson,
+# net-url) from luarocks in a separate builder stage. We copy the
+# result straight out of jitsi/prosody rather than rebuilding.
 
-ADD https://github.com/just-containers/s6-overlay/releases/download/v${S6_OVERLAY_VERSION}/s6-overlay-noarch.tar.xz /tmp/
-ADD https://github.com/just-containers/s6-overlay/releases/download/v${S6_OVERLAY_VERSION}/s6-overlay-x86_64.tar.xz /tmp/
-RUN tar -C / -Jxpf /tmp/s6-overlay-noarch.tar.xz && \
-    tar -C / -Jxpf /tmp/s6-overlay-x86_64.tar.xz && \
-    rm /tmp/s6-overlay-*.tar.xz
+COPY --from=prosody-src /usr/local/lib/lua/5.4/   /usr/local/lib/lua/5.4/
+COPY --from=prosody-src /usr/local/share/lua/5.4/ /usr/local/share/lua/5.4/
 
-# -----------------------------------------------------------------------------
-# Our config rewriter + s6 service definitions. See rootfs/ for the
-# full layout.
+# ---------------------------------------------------------------- rootfs overlay
+#
+# Copy the official /defaults, /etc/cont-init.d, /etc/services.d
+# trees. The colliding 10-config names get renamed so s6 runs them
+# all, in a deterministic order (prosody first -- it registers users
+# and mints certs the other services depend on).
 
-COPY rootfs/ /
+# prosody -------------------------------------------------------------
+COPY --from=prosody-src /defaults/prosody.cfg.lua         /defaults/prosody.cfg.lua
+COPY --from=prosody-src /defaults/conf.d/                 /defaults/conf.d/
+COPY --from=prosody-src /defaults/rules.d/                /defaults/rules.d/
+COPY --from=prosody-src /defaults/saslauthd.conf          /defaults/saslauthd.conf
+COPY --from=prosody-src /etc/sasl/                        /etc/sasl/
+COPY --from=prosody-src /etc/services.d/prosody/          /etc/services.d/prosody/
+COPY --from=prosody-src /etc/services.d/10-saslauthd/     /etc/services.d/10-saslauthd/
+COPY --from=prosody-src /etc/cont-init.d/10-config        /etc/cont-init.d/10-prosody-config
 
-RUN chmod +x /etc/cont-init.d/*.sh \
-             /usr/local/lib/jitsi/discover_hostname.py \
-             /etc/services.d/*/run \
-             /etc/services.d/*/finish
+# jicofo --------------------------------------------------------------
+COPY --from=jicofo-src  /defaults/jicofo.conf             /defaults/jicofo.conf
+COPY --from=jicofo-src  /defaults/logging.properties      /defaults/jicofo-logging.properties
+COPY --from=jicofo-src  /etc/services.d/jicofo/           /etc/services.d/jicofo/
+COPY --from=jicofo-src  /etc/cont-init.d/10-config        /etc/cont-init.d/11-jicofo-config
 
-# -----------------------------------------------------------------------------
-# The web container serves the Jitsi SPA on port 80 (OpenHost proxies
-# TLS to us). JVB_PORT (9500/udp by default) is media and is bound
-# separately via [[ports]] in openhost.toml.
+# jvb -----------------------------------------------------------------
+COPY --from=jvb-src     /defaults/jvb.conf                /defaults/jvb.conf
+COPY --from=jvb-src     /defaults/logging.properties      /defaults/jvb-logging.properties
+COPY --from=jvb-src     /etc/services.d/jvb/              /etc/services.d/jvb/
+COPY --from=jvb-src     /etc/cont-init.d/10-config        /etc/cont-init.d/12-jvb-config
+
+# web -----------------------------------------------------------------
+COPY --from=web-src     /defaults/default                 /defaults/nginx-default.conf
+COPY --from=web-src     /defaults/nginx.conf              /defaults/nginx.conf
+COPY --from=web-src     /defaults/meet.conf               /defaults/meet.conf
+COPY --from=web-src     /defaults/ssl.conf                /defaults/ssl.conf
+COPY --from=web-src     /defaults/ffdhe2048.txt           /defaults/ffdhe2048.txt
+COPY --from=web-src     /defaults/system-config.js        /defaults/system-config.js
+COPY --from=web-src     /defaults/settings-config.js      /defaults/settings-config.js
+COPY --from=web-src     /defaults/interface_config.js     /defaults/interface_config.js
+COPY --from=web-src     /etc/services.d/nginx/            /etc/services.d/nginx/
+COPY --from=web-src     /etc/cont-init.d/10-config        /etc/cont-init.d/13-web-config
+
+# ---------------------------------------------------------------- patches
+#
+# Each service's upstream cont-init assumes `/config` is *its own*
+# directory. Since we're running four services in one container we
+# split them into `/config/prosody`, `/config/jicofo`, `/config/jvb`,
+# and `/config/web`, then rewrite the cont-init + run scripts to
+# match. Simpler than trying to coordinate a shared `/config`.
+COPY patches/ /tmp/patches/
+RUN bash /tmp/patches/apply-patches.sh && rm -rf /tmp/patches
+
+# ---------------------------------------------------------------- openhost glue
+#
+# One bespoke cont-init of our own runs before any of the others and
+# discovers the OpenHost-assigned public hostname from the first
+# incoming HTTP request. The value is cached to /config/hostname so
+# subsequent boots skip this. It also sets defaults for variables the
+# upstream templates require that we don't want the operator to have
+# to set manually (JICOFO_AUTH_PASSWORD, JVB_AUTH_PASSWORD, etc.).
+COPY openhost-bootstrap/ /opt/openhost-jitsi/
+COPY openhost-bootstrap/00-openhost-config.sh /etc/cont-init.d/00-openhost-config
+
+RUN chmod +x /etc/cont-init.d/* /opt/openhost-jitsi/*.sh 2>/dev/null || true
+
+# ---------------------------------------------------------------- runtime
 EXPOSE 80
+ENV DISABLE_HTTPS=1 \
+    ENABLE_HTTP_REDIRECT=0 \
+    ENABLE_IPV6=0 \
+    XMPP_SERVER=127.0.0.1 \
+    XMPP_BOSH_URL_BASE=http://127.0.0.1:5280 \
+    DISABLE_COLIBRI_WEBSOCKET_JVB_LOOKUP=1 \
+    ENABLE_COLIBRI_WEBSOCKET=0 \
+    TZ=UTC
 
-ENV S6_CMD_WAIT_FOR_SERVICES=1 \
-    S6_CMD_WAIT_FOR_SERVICES_MAXTIME=120000 \
-    S6_BEHAVIOUR_IF_STAGE2_FAILS=0 \
-    S6_KEEP_ENV=1 \
-    S6_VERBOSITY=2
+VOLUME ["/config"]
 
-ENTRYPOINT ["/init"]
+# ENTRYPOINT ["/init"] is inherited from jitsi/base.

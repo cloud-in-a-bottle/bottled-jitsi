@@ -1,3 +1,0 @@
-#!/bin/bash
-echo "[finish] jvb exited (code=$1, signal=$2)" >&2
-sleep 2
