@@ -162,6 +162,31 @@ sed -i \
     -e 's#chown -R www-data /config\b#chown -R www-data /config/web#g' \
     /etc/cont-init.d/13-web-config
 
+# Force nginx to echo the 'xmpp' WebSocket subprotocol back to the
+# client on /xmpp-websocket. Prosody's mod_websocket in some versions
+# omits the Sec-WebSocket-Protocol response header under certain
+# proxy configurations, which causes strict client implementations
+# (including lib-jitsi-meet in Chrome/Firefox) to abort the
+# connection immediately after the WebSocket handshake.
+python3 - <<'PY'
+import pathlib
+p = pathlib.Path("/defaults/meet.conf")
+text = p.read_text()
+# Inject the add_header inside the /xmpp-websocket location block.
+# add_header inside an `if`-less location applies to 101 responses
+# as well. "always" is required for non-2xx responses; nginx treats
+# 101 as not-2xx by default.
+needle = 'location = /xmpp-websocket {'
+injection = (
+    'location = /xmpp-websocket {\n'
+    '    # Always echo the xmpp subprotocol on the 101 response.\n'
+    '    # See: https://github.com/jitsi/docker-jitsi-meet/issues/XYZ.\n'
+    '    add_header Sec-WebSocket-Protocol "xmpp" always;\n'
+)
+text = text.replace(needle, injection, 1)
+p.write_text(text)
+PY
+
 # Make sure every services.d run script inherits container env. The
 # upstream jvb run uses /bin/bash but with `with-contenv bash` the
 # env var forwarding works; we don't need to change that.
