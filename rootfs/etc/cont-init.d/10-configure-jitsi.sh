@@ -257,23 +257,36 @@ PY
     log "neutered :443 listener + ssl_* directives + HTTPS redirect in nginx config"
 fi
 
-# Make sure prosody's HTTP port (for BOSH/XMPP-WS) is bound on 5280.
-# jitsi's nginx vhost proxies /http-bind and /xmpp-websocket to
-# prosody's HTTP listener on that port. Prosody 13 defaults to
-# serving these on HTTPS-only; jitsi expects plain-HTTP on 5280.
-VHOST_CFG="/etc/prosody/conf.avail/$HOSTNAME.cfg.lua"
+# Configure prosody's HTTP endpoint so BOSH / XMPP-WS work via nginx.
+# Needed bits:
+#   * http_ports = { 5280 }   -- bind plain HTTP on 5280 so nginx
+#                                upstream 127.0.0.1:5280 lands
+#   * https_ports = {}        -- skip the HTTPS listener; we have no
+#                                valid cert for it and don't need it
+#   * trusted_proxies         -- so X-Forwarded-For from nginx is
+#                                honored
+#   * http_default_host       -- tells prosody which VirtualHost a
+#                                BOSH request should be routed to
+#                                when the Host: header doesn't match
+#                                a registered host. Without this,
+#                                BOSH hits return 404 because the
+#                                HTTP layer can't figure out which
+#                                VirtualHost to dispatch to.
+export VHOST_CFG="/etc/prosody/conf.avail/$HOSTNAME.cfg.lua"
 if [[ -f "$VHOST_CFG" ]] && ! grep -q "^http_ports" "$VHOST_CFG"; then
-    python3 <<PY
-import pathlib
-p = pathlib.Path("$VHOST_CFG")
+    export HOSTNAME_VALUE="$HOSTNAME"
+    python3 <<'PY'
+import os, pathlib, re
+vhost_path = os.environ["VHOST_CFG"]
+hostname = os.environ["HOSTNAME_VALUE"]
+p = pathlib.Path(vhost_path)
 text = p.read_text()
-# Insert before the first VirtualHost so these settings are global.
 inject = (
-    'http_ports = { 5280 }\n'
-    'https_ports = { }\n'
-    'trusted_proxies = { "127.0.0.1", "::1" }\n\n'
+    f'http_ports = {{ 5280 }}\n'
+    f'https_ports = {{ }}\n'
+    f'trusted_proxies = {{ "127.0.0.1", "::1" }}\n'
+    f'http_default_host = "{hostname}"\n\n'
 )
-import re
 m = re.search(r'^VirtualHost\s', text, re.MULTILINE)
 if m:
     text = text[:m.start()] + inject + text[m.start():]
@@ -281,7 +294,7 @@ else:
     text = inject + text
 p.write_text(text)
 PY
-    log "set http_ports/https_ports/trusted_proxies in prosody vhost config"
+    log "set http_ports/https_ports/trusted_proxies/http_default_host globally"
 fi
 
 # Force prosody to log to stdout so s6 captures it. The log directive
