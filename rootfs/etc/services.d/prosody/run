@@ -2,26 +2,11 @@
 # Prosody XMPP server -- the signaling backbone jitsi-meet, jicofo,
 # and JVB all connect to. Runs on 5222 (c2s), 5269 (s2s), 5280
 # (BOSH/ws) on localhost only.
+exec 2>&1
 
 # Prosody refuses to run as root (hard-coded assert in prosody.in).
 # Drop privileges to the prosody user the Debian package created.
-# Also make sure we capture stdout+stderr into one stream so s6
-# forwards it up to the container log.
-exec 2>&1
-# Dump a directory listing once for debugging so we can confirm the
-# files cont-init created actually exist.
-echo "[prosody] starting; conf.d contents:"
-ls -la /etc/prosody/conf.d/ /etc/prosody/certs/ /var/lib/prosody/ 2>&1 | head -30
-echo "[prosody] tail of main cfg:"
-tail -15 /etc/prosody/prosody.cfg.lua 2>&1 | sed 's/^/[prosody cfg] /'
-echo "[prosody] head of vhost cfg:"
-head -15 /etc/prosody/conf.d/*.cfg.lua 2>&1 | sed 's/^/[prosody vhost] /'
-# Ensure prosody user can read the config file.
+# Ensure the vhost config is readable by the prosody user.
 chown -h prosody:prosody /etc/prosody/conf.d/*.cfg.lua 2>/dev/null || true
 
-# Try prosodyctl check config first to surface any parse errors.
-echo "[prosody] running prosodyctl check config"
-s6-setuidgid prosody /usr/bin/prosodyctl check config 2>&1 | sed 's/^/[prosody check] /' || true
-
-echo "[prosody] launching prosody as prosody user"
-exec s6-setuidgid prosody /usr/bin/prosody --foreground 2>&1
+exec s6-setuidgid prosody /usr/bin/prosody --foreground

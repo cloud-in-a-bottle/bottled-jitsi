@@ -6,6 +6,24 @@ Runs the full Jitsi stack — Prosody (XMPP), Jicofo (focus), Jitsi
 Videobridge (SFU), and Nginx — in a single container supervised by
 [s6-overlay](https://github.com/just-containers/s6-overlay).
 
+## Status
+
+**Work in progress.** The Jitsi Meet web UI loads and all four
+services come up cleanly, but XMPP signaling (BOSH `/http-bind` and
+`/xmpp-websocket`) is still returning 404 from the prosody backend.
+Browsers that reach the page cannot actually open a conference until
+that is fixed. Tracked items before this is usable:
+
+- [ ] BOSH + XMPP-WS reachable through nginx's `/http-bind` and
+  `/xmpp-websocket` locations (prosody replies 404 currently — likely
+  a `http_default_host` / Host-header vs. `trusted_proxies` interaction
+  in prosody 13 that the Debian jitsi-meet-prosody postinst template
+  doesn't set up).
+- [ ] JVB media reachability from an external browser. Port mapping
+  is in place (9500/udp on the VM); ICE candidate advertising via
+  `JVB_ADVERTISE_IPS` needs validation with a real browser.
+- [ ] End-to-end browser-to-browser call test.
+
 ## What you get
 
 - A working Jitsi Meet instance at `https://<app>.<your-openhost-host>/`.

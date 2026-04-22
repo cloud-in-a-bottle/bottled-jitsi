@@ -2,21 +2,7 @@
 # Nginx serves the Jitsi Meet SPA + proxies BOSH / XMPP-WS / colibri-ws
 # to prosody and JVB. Configured by the jitsi-meet-web-config Debian
 # package to listen on :80 (and :443, but the cont-init rewriter
-# strips :443 since OpenHost terminates TLS upstream).
+# rebinds :443 to an unused localhost port since OpenHost terminates
+# TLS upstream).
 exec 2>&1
-echo "[nginx] sites-enabled: $(ls /etc/nginx/sites-enabled/ 2>&1)"
-echo "[nginx] conf.d: $(ls /etc/nginx/conf.d/ 2>&1)"
-echo "[nginx] ls -la /usr/share/jitsi-meet/index.html:"
-ls -la /usr/share/jitsi-meet/index.html 2>&1
-echo "[nginx] /http-bind + /xmpp-websocket location blocks:"
-grep -nB1 -A8 "http-bind\|xmpp-websocket" /etc/nginx/sites-enabled/*.conf | head -30 | sed 's/^/[vhost] /'
-echo "[nginx] ls /usr/share/jitsi-meet/:"
-ls /usr/share/jitsi-meet/ 2>&1 | head -10 | sed 's/^/[jitsi-meet] /'
-echo "[nginx] full dump of :80 server block in the active vhost:"
-awk '
-  /^server\s*\{/ { in_s=1; buf=""; has80=0 }
-  in_s { buf = buf $0 ORS }
-  in_s && /listen.*80\b/ && !/#/ { has80=1 }
-  in_s && /^\}/ { if (has80) print buf; in_s=0 }
-' /etc/nginx/sites-enabled/*.conf | head -50 | sed 's/^/[nginx :80] /'
 exec /usr/sbin/nginx -g "daemon off;"
