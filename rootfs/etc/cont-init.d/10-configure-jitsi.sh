@@ -171,11 +171,14 @@ done
 # would bind to :443 or reference cert files. nginx will still parse
 # the block but the `listen` directive will be gone, so it becomes a
 # harmless catch-all that never gets traffic.
-# Disable Debian's default "Welcome to nginx" vhost. It listens on
-# :80 as default_server, which on some nginx builds wins over named
-# vhosts even for Host-matching requests. We want our jitsi vhost to
-# be the only thing answering.
-rm -f /etc/nginx/sites-enabled/default
+# Disable Debian's default "Welcome to nginx" vhost and the static
+# welcome HTML. Both sites-enabled/default (the vhost) and the file
+# at /usr/share/nginx/html/index.html contribute to nginx serving a
+# welcome page when the wrong vhost is picked; nuke them both so any
+# misrouting becomes a hard 404 rather than a misleading "success".
+rm -f /etc/nginx/sites-enabled/default /etc/nginx/sites-available/default
+rm -f /usr/share/nginx/html/index.html /usr/share/nginx/html/index.nginx-debian.html
+rm -rf /var/www/html
 
 NGINX_CONF="/etc/nginx/sites-available/$HOSTNAME.conf"
 if [[ -f "$NGINX_CONF" ]]; then
