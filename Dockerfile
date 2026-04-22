@@ -74,7 +74,7 @@ RUN apt-dpkg-wrap apt-get update && \
 RUN apt-dpkg-wrap apt-get update && \
     apt-dpkg-wrap apt-get -d install -y jitsi-meet-prosody && \
     dpkg -x /var/cache/apt/archives/jitsi-meet-prosody*.deb /tmp/pkg && \
-    rm /tmp/pkg/usr/share/jitsi-meet/prosody-plugins/mod_smacks.lua && \
+    rm -f /tmp/pkg/usr/share/jitsi-meet/prosody-plugins/mod_smacks.lua && \
     mv /tmp/pkg/usr/share/jitsi-meet/prosody-plugins /prosody-plugins && \
     rm -rf /tmp/pkg /var/cache/apt/archives/*.deb /var/lib/apt/lists/* && \
     mkdir -p /prosody-plugins-custom /prosody-plugins-contrib && \
