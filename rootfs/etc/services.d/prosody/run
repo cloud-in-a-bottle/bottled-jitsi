@@ -2,7 +2,18 @@
 # Prosody XMPP server -- the signaling backbone jitsi-meet, jicofo,
 # and JVB all connect to. Runs on 5222 (c2s), 5269 (s2s), 5280
 # (BOSH/ws) on localhost only.
-exec 2>&1
+
 # Prosody refuses to run as root (hard-coded assert in prosody.in).
 # Drop privileges to the prosody user the Debian package created.
-exec s6-setuidgid prosody /usr/bin/prosody --foreground
+# Also make sure we capture stdout+stderr into one stream so s6
+# forwards it up to the container log.
+exec 2>&1
+# Dump a directory listing once for debugging so we can confirm the
+# files cont-init created actually exist.
+echo "[prosody] starting; conf.d contents:"
+ls -la /etc/prosody/conf.d/ /etc/prosody/certs/ /var/lib/prosody/ 2>&1 | head -30
+echo "[prosody] tail of main cfg:"
+tail -5 /etc/prosody/prosody.cfg.lua 2>&1
+echo "[prosody] launching prosody as prosody user"
+
+exec s6-setuidgid prosody /usr/bin/prosody --foreground 2>&1
