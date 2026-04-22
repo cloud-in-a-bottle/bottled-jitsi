@@ -30,12 +30,48 @@ mkdir -p "$SECRETS_DIR" "$PROSODY_DATA_DIR" "$APP_TEMP"
 
 # ---------------------------------------------------------------- hostname
 
-# PUBLIC_URL should be e.g. https://jitsi.andrew-1.selfhost.imbue.com.
-# OpenHost does not yet auto-inject this, so the operator must set it
-# (we document this in the README). If unset, fall back to the internal
-# XMPP domain and the app will still "work" for localhost-only tests.
-PUBLIC_URL="${PUBLIC_URL:-https://localhost}"
-HOSTNAME="$(echo "$PUBLIC_URL" | sed -E 's#^https?://##; s#/.*$##')"
+# Resolve the public hostname the browser will use.
+#
+# Priority:
+#   1. $PUBLIC_URL env var, if set (operator override).
+#   2. $OPENHOST_PUBLIC_HOSTNAME env var (reserved for a future
+#      OpenHost feature that injects this automatically).
+#   3. Block until an HTTP client hits the container on port 80 and
+#      tells us via X-Forwarded-Host. This lets us bootstrap without
+#      requiring the operator to set any env vars.
+#
+# After resolving, we cache the value in $APP_DATA/hostname so
+# subsequent restarts skip step 3.
+CACHED_HOSTNAME_FILE="$APP_DATA/hostname"
+
+resolve_hostname() {
+    if [[ -n "${PUBLIC_URL:-}" ]]; then
+        echo "$PUBLIC_URL" | sed -E 's#^https?://##; s#/.*$##'
+        return
+    fi
+    if [[ -n "${OPENHOST_PUBLIC_HOSTNAME:-}" ]]; then
+        echo "$OPENHOST_PUBLIC_HOSTNAME"
+        return
+    fi
+    if [[ -f "$CACHED_HOSTNAME_FILE" ]]; then
+        cat "$CACHED_HOSTNAME_FILE"
+        return
+    fi
+    # Fall back to the discovery dance: run a one-shot python
+    # listener on :80 that captures X-Forwarded-Host from the first
+    # request and exits. Uses stdlib only (no nginx yet).
+    log "no hostname set; waiting for first HTTP request to discover it" >&2
+    python3 /etc/cont-init.d/_discover_hostname.py "$CACHED_HOSTNAME_FILE" >&2
+    cat "$CACHED_HOSTNAME_FILE"
+}
+
+HOSTNAME="$(resolve_hostname)"
+if [[ -z "$HOSTNAME" ]]; then
+    log "FATAL: could not resolve public hostname"
+    exit 1
+fi
+echo "$HOSTNAME" > "$CACHED_HOSTNAME_FILE"
+PUBLIC_URL="${PUBLIC_URL:-https://$HOSTNAME}"
 log "PUBLIC_URL=$PUBLIC_URL  -> hostname=$HOSTNAME"
 
 # Replace every occurrence of the build-time placeholder ("localhost"
@@ -70,7 +106,18 @@ PLACEHOLDER="meet.invalid"
 rename_placeholder() {
     local src="$1"
     local dst="${src//$PLACEHOLDER/$HOSTNAME}"
-    if [[ "$src" != "$dst" && -e "$src" ]]; then
+    [[ "$src" == "$dst" ]] && return 0
+    if [[ -L "$src" ]]; then
+        # Redirect the symlink to point at the renamed target, then
+        # move the link itself. Otherwise the link's target becomes
+        # stale after the parent file is renamed.
+        local target
+        target="$(readlink "$src")"
+        local new_target="${target//$PLACEHOLDER/$HOSTNAME}"
+        ln -sfn "$new_target" "$src"
+        mv "$src" "$dst"
+        log "renamed symlink $(basename "$src") -> $(basename "$dst") (target $new_target)"
+    elif [[ -e "$src" ]]; then
         mv "$src" "$dst"
         log "renamed $(basename "$src") -> $(basename "$dst")"
     fi
