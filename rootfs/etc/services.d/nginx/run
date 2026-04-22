@@ -5,12 +5,7 @@
 # strips :443 since OpenHost terminates TLS upstream).
 exec 2>&1
 echo "[nginx] sites-enabled: $(ls /etc/nginx/sites-enabled/ 2>&1)"
-echo "[nginx] full dump of active :80 servers (nginx -T filtered):"
-nginx -T 2>&1 | awk '
-    /^server\s*\{/ { in=1; blk=""; want=0 }
-    in { blk = blk ORS $0 }
-    in && /server_name/ { sn=$0 }
-    in && /listen.*80/ { want=1 }
-    in && /^}/ { if (want) print sn; in=0 }
-' | head -20 | sed 's/^/[nginx :80] /'
+echo "[nginx] conf.d: $(ls /etc/nginx/conf.d/ 2>&1)"
+echo "[nginx] nginx -T (listen + server_name lines only):"
+nginx -T 2>&1 | grep -E "^\s*(listen|server_name)" | sed 's/^/[nginx -T] /'
 exec /usr/sbin/nginx -g "daemon off;"
