@@ -1,6 +1,6 @@
 #!/bin/bash
-# Prosody is critical -- if it exits, nothing else in the stack can
-# function. Bring the container down so OpenHost restarts us fresh.
-exec 0<&-
-echo "$1" > /run/s6-linux-init-container-results/exitcode
-exec /run/s6/basedir/bin/halt
+# Just log and let s6 restart the service. Setting exitcode would
+# bring down the whole container, which makes debugging painful and
+# produces endless restart loops under OpenHost's supervisor.
+echo "[finish] prosody exited (code=$1, signal=$2)" >&2
+sleep 2
