@@ -6,6 +6,8 @@
 exec 2>&1
 echo "[nginx] sites-enabled: $(ls /etc/nginx/sites-enabled/ 2>&1)"
 echo "[nginx] conf.d: $(ls /etc/nginx/conf.d/ 2>&1)"
-echo "[nginx] nginx -T (listen + server_name lines only):"
-nginx -T 2>&1 | grep -E "^\s*(listen|server_name)" | sed 's/^/[nginx -T] /'
+echo "[nginx] nginx -T (listen + server_name + root lines only):"
+nginx -T 2>&1 | grep -E "^\s*(listen|server_name|root\s|include\s)" | head -40 | sed 's/^/[nginx -T] /'
+echo "[nginx] ls /usr/share/jitsi-meet/:"
+ls /usr/share/jitsi-meet/ 2>&1 | head -10 | sed 's/^/[jitsi-meet] /'
 exec /usr/sbin/nginx -g "daemon off;"
