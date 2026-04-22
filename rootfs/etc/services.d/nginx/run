@@ -8,8 +8,8 @@ echo "[nginx] sites-enabled: $(ls /etc/nginx/sites-enabled/ 2>&1)"
 echo "[nginx] conf.d: $(ls /etc/nginx/conf.d/ 2>&1)"
 echo "[nginx] ls -la /usr/share/jitsi-meet/index.html:"
 ls -la /usr/share/jitsi-meet/index.html 2>&1
-echo "[nginx] effective server block for / location (first 30 lines after first server{):"
-awk '/^server\s*\{/{flag++;if(flag==1)inblk=1} inblk{print} /^\}/ && inblk{exit}' /etc/nginx/sites-enabled/*.conf | head -40 | sed 's/^/[nginx blk1] /'
+echo "[nginx] lines 40-100 of active vhost:"
+sed -n '40,100p' /etc/nginx/sites-enabled/*.conf | sed 's/^/[vhost] /'
 echo "[nginx] ls /usr/share/jitsi-meet/:"
 ls /usr/share/jitsi-meet/ 2>&1 | head -10 | sed 's/^/[jitsi-meet] /'
 echo "[nginx] full dump of :80 server block in the active vhost:"
