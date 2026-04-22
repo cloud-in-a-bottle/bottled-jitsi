@@ -160,31 +160,43 @@ done
 
 # ---------------------------------------------------------------- TLS off
 
-# Strip all references to TLS certs and the :443 listener from the
-# generated nginx conf. OpenHost speaks plain HTTP to us on :80.
+# Disable the :443 listener in the generated nginx vhost. OpenHost's
+# Caddy already terminates TLS in front of us, and the container has
+# no real certs anyway. We could delete the whole `server { ... :443
+# ... }` block, but finding the matching brace reliably is fragile
+# given nginx's freeform syntax and the upstream template's layout.
+# Instead, neuter the block's binding: comment out any lines that
+# would bind to :443 or reference cert files. nginx will still parse
+# the block but the `listen` directive will be gone, so it becomes a
+# harmless catch-all that never gets traffic.
 NGINX_CONF="/etc/nginx/sites-available/$HOSTNAME.conf"
 if [[ -f "$NGINX_CONF" ]]; then
-    # The installer's template wraps the :443 server{} block between
-    # an opening 'server {' at column 0 and a matching closing '}'.
-    # We delete from 'listen 443' up to the matching '}'. Awk handles
-    # the brace counting reliably without needing a full nginx parser.
-    awk '
-        BEGIN { in_tls = 0; depth = 0 }
-        /listen 443/ && !in_tls { in_tls = 1; depth = 1; next }
-        in_tls {
-            for (i = 1; i <= length($0); i++) {
-                c = substr($0, i, 1)
-                if (c == "{") depth++
-                else if (c == "}") {
-                    depth--
-                    if (depth == 0) { in_tls = 0; next }
-                }
-            }
-            next
-        }
-        { print }
-    ' "$NGINX_CONF" > "$NGINX_CONF.tmp" && mv "$NGINX_CONF.tmp" "$NGINX_CONF"
-    log "stripped :443 server block from nginx config"
+    # Comment out any line that binds to :443 or references SSL certs
+    # that don't exist in this container. nginx then parses the 443
+    # server {} block but never listens on 443, so it becomes a
+    # harmless no-op.
+    python3 <<PY
+import re, pathlib
+p = pathlib.Path("$NGINX_CONF")
+text = p.read_text()
+out = []
+for line in text.splitlines():
+    stripped = line.lstrip()
+    if (stripped.startswith("listen") and "443" in stripped) \
+       or stripped.startswith("ssl_certificate") \
+       or stripped.startswith("ssl_certificate_key") \
+       or stripped.startswith("ssl_trusted_certificate") \
+       or stripped.startswith("ssl_dhparam") \
+       or stripped.startswith("ssl_protocols") \
+       or stripped.startswith("ssl_ciphers") \
+       or stripped.startswith("ssl_prefer_server_ciphers") \
+       or stripped.startswith("ssl_session_"):
+        out.append("# " + line)
+    else:
+        out.append(line)
+p.write_text("\n".join(out) + "\n")
+PY
+    log "neutered :443 listener + ssl_* directives in nginx config"
 fi
 
 # Make sure nginx doesn't try to open syslog on a socket that doesn't

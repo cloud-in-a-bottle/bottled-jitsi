@@ -3,6 +3,6 @@
 # and JVB all connect to. Runs on 5222 (c2s), 5269 (s2s), 5280
 # (BOSH/ws) on localhost only.
 exec 2>&1
-# Prosody forks by default; --foreground keeps it in the foreground
-# so s6 can supervise it.
-exec /usr/bin/prosody --foreground
+# Prosody refuses to run as root (hard-coded assert in prosody.in).
+# Drop privileges to the prosody user the Debian package created.
+exec s6-setuidgid prosody /usr/bin/prosody --foreground
