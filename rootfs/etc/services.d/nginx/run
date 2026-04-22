@@ -10,4 +10,11 @@ echo "[nginx] nginx -T (listen + server_name + root lines only):"
 nginx -T 2>&1 | grep -E "^\s*(listen|server_name|root\s|include\s)" | head -40 | sed 's/^/[nginx -T] /'
 echo "[nginx] ls /usr/share/jitsi-meet/:"
 ls /usr/share/jitsi-meet/ 2>&1 | head -10 | sed 's/^/[jitsi-meet] /'
+echo "[nginx] full dump of :80 server block in the active vhost:"
+awk '
+  /^server\s*\{/ { in_s=1; buf=""; has80=0 }
+  in_s { buf = buf $0 ORS }
+  in_s && /listen.*80\b/ && !/#/ { has80=1 }
+  in_s && /^\}/ { if (has80) print buf; in_s=0 }
+' /etc/nginx/sites-enabled/*.conf | head -50 | sed 's/^/[nginx :80] /'
 exec /usr/sbin/nginx -g "daemon off;"
