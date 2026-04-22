@@ -4,66 +4,49 @@
 
 Runs the full Jitsi stack — Prosody (XMPP), Jicofo (focus), Jitsi
 Videobridge (SFU), and Nginx — in a single container supervised by
-[s6-overlay](https://github.com/just-containers/s6-overlay).
-
-## Status
-
-**Work in progress.** The Jitsi Meet web UI loads and all four
-services come up cleanly, but XMPP signaling (BOSH `/http-bind` and
-`/xmpp-websocket`) is still returning 404 from the prosody backend.
-Browsers that reach the page cannot actually open a conference until
-that is fixed. Tracked items before this is usable:
-
-- [ ] BOSH + XMPP-WS reachable through nginx's `/http-bind` and
-  `/xmpp-websocket` locations (prosody replies 404 currently — likely
-  a `http_default_host` / Host-header vs. `trusted_proxies` interaction
-  in prosody 13 that the Debian jitsi-meet-prosody postinst template
-  doesn't set up).
-- [ ] JVB media reachability from an external browser. Port mapping
-  is in place (9500/udp on the VM); ICE candidate advertising via
-  `JVB_ADVERTISE_IPS` needs validation with a real browser.
-- [ ] End-to-end browser-to-browser call test.
+[s6-overlay](https://github.com/just-containers/s6-overlay). The
+image is assembled by merging the rootfs trees of the four official
+`jitsi/web`, `jitsi/prosody`, `jitsi/jicofo`, and `jitsi/jvb`
+container images, so the tpl-rendered configs are exactly those
+upstream maintains and tests.
 
 ## What you get
 
-- A working Jitsi Meet instance at `https://<app>.<your-openhost-host>/`.
-- Any user who can reach the URL can create rooms and join calls.
-- Media flows over UDP on the public `jvb-media` port (9500 by
-  default, fixed by `openhost.toml` so it's advertisable in SDP).
-- Signaling (XMPP-WS, BOSH, Colibri-WS) rides the same 443 your
-  OpenHost router already uses, proxied over the router's WebSocket
-  passthrough.
+- `https://<app>.<your-openhost-host>/` — the standard Jitsi Meet web
+  UI. Pick a room name, click **Start meeting**, share the URL.
+- Works with standard Jitsi Meet client apps (desktop, iOS, Android)
+  since the server speaks vanilla BOSH / XMPP-WebSocket / Colibri.
+- Self-contained: no external TURN/STUN/coturn required on the
+  happy path. JVB self-discovers its public IP via a static mapping
+  or STUN and advertises it in ICE candidates.
 
 ## Architecture
 
-OpenHost apps are strictly one image per app, so the four Jitsi
-components have to live in a single container. We apt-install the
-upstream Debian packages (`jitsi-meet`, `jitsi-videobridge2`, `jicofo`,
-`prosody`, `nginx-full`) — the same path the official quickstart uses
-— and supervise them with `s6-overlay`. At container boot,
-`/etc/cont-init.d/10-configure-jitsi.sh` rewrites the installer's
-generated configs to the real `PUBLIC_URL`, pins `JVB_PORT=9500`,
-strips the built-in HTTPS vhost (OpenHost's Caddy terminates TLS in
-front of us), and advertises the VM's public IP to the ICE harvester
-so WebRTC candidates are actually reachable.
+```
+ browser
+    │  https + wss  (443/tcp)                 media UDP (9500/udp)
+    ▼                                                      │
+ OpenHost Caddy  ─── plain http/ws ───▶ nginx :80          │
+                                         │                 │
+                                         ▼                 │
+                                       meet.conf           │
+                                         ├── /http-bind ─▶ prosody :5280
+                                         ├── /xmpp-ws   ─▶ prosody :5280
+                                         └── static JS (Jitsi SPA)
+                                                          ▲│
+                                                   XMPP   ││
+                                                   :5222  ││
+                                                 jicofo ──┤│
+                                                 jvb ─────┘│
+                                                            │
+                                                        browser◀
+```
 
-```
-browser
-  │  https + wss (443/tcp)
-  ▼
-OpenHost Caddy ───────────┐
-  │                        │ plain http, WebSocket passthrough
-  │                        ▼
-  │                nginx :80   (container)
-  │                  ├─ static SPA: /usr/share/jitsi-meet
-  │                  ├─ /http-bind  ➜ prosody :5280
-  │                  ├─ /xmpp-websocket ➜ prosody :5280
-  │                  └─ /colibri-ws/jvb/… ➜ jvb :9090 (internal)
-  │
-  │   media UDP 9500  ──────────────────────────▶ jvb :9500
-  └──────────────────────────────────────────────┘
-                       public VM IP
-```
+All four services live in one container. `/config/{prosody,jicofo,jvb,web}`
+are per-service subdirs so their `chown -R` lines don't fight each
+other. `s6-overlay` supervises the four services via the exact same
+`run` scripts the upstream jitsi/* images ship, after a build-time
+sed pass to retarget `/config/...` paths into the per-service subdirs.
 
 ## Ports
 
@@ -76,75 +59,68 @@ Declared in `openhost.toml`:
 
 The 9500 port is in the 9000–9999 range OpenHost permits for extra
 ports. `JVB_PORT=9500` is set inside the container so Jitsi matches
-what OpenHost publishes on the host.
+what OpenHost publishes on the host. If you change the port, update
+both the manifest `host_port` and the `JVB_PORT` env var and
+redeploy.
 
-## Required environment
+## First-boot hostname discovery
 
-Set in the OpenHost app config (Settings → Environment):
+OpenHost does not currently inject the app's public hostname as an
+env var. On first boot, cont-init runs a one-shot HTTP listener on
+port 80 that captures `X-Forwarded-Host` from the first incoming
+request, caches it to `$OPENHOST_APP_DATA_DIR/hostname`, and uses
+that for all Jitsi config rendering. Subsequent boots skip the
+discovery step. If you'd rather set it explicitly, provide
+`PUBLIC_URL=https://...` as an env var.
 
-- **`PUBLIC_URL`** — the https URL users will type into their browser,
-  e.g. `https://jitsi.<your-vm>/`. Used to rewrite nginx/prosody
-  vhosts and the Jitsi client config. Without this the install sits at
-  `localhost` and won't talk to browsers.
-- **`JVB_ADVERTISE_IP`** *(strongly recommended)* — the public IPv4
-  address of your OpenHost VM. JVB inserts this into SDP ICE
-  candidates. If unset, JVB tries to self-discover via STUN
-  (`stun.l.google.com:19302`); that usually works on public clouds but
-  can fail behind corporate NAT.
+## Shared secrets
 
-Optional:
-
-- `JVB_PORT` — override the 9500 default. If you change it you also
-  need to update the `host_port` in `openhost.toml` and redeploy.
+`$OPENHOST_APP_DATA_DIR/secrets/` holds the three inter-service
+XMPP passwords (`JICOFO_AUTH_PASSWORD`, `JICOFO_COMPONENT_SECRET`,
+`JVB_AUTH_PASSWORD`). They're auto-generated on first boot and
+reused forever. Prosody's flat-file user db in
+`$OPENHOST_APP_DATA_DIR/prosody-data/` (effectively `/config/prosody/data`
+inside the container) persists the registered focus + jvb users so
+services stay authenticated across restarts.
 
 ## Resource requirements
 
-3 GB RAM / 2 CPUs (set in `openhost.toml`) is comfortable for a single
-room of 5–10 participants at 720p. The dominant cost is aggregate
-outbound bandwidth (~2.5 Mbps per participant, fanned out by JVB), not
-CPU. Scale memory up if you expect larger rooms.
-
-## Data
-
-- `/data/app_data/jitsi/secrets/` — generated XMPP shared secrets for
-  jicofo/jvb/prosody. Persisted so restarts don't invalidate in-flight
-  sessions.
-- `/data/app_data/jitsi/prosody-data/` — prosody's flat-file state
-  dir, linked to `/var/lib/prosody` inside the container. Only
-  populated if you enable internal auth; empty otherwise.
-- `/data/app_temp_data/jitsi/` — per-boot scratch (nginx cache, JVB
-  temp). Safe to nuke at any time.
+3 GB RAM / 2 CPUs (set in `openhost.toml`) is comfortable for a
+single room with 5–10 participants at 720p. The dominant cost is
+aggregate outbound bandwidth (~2.5 Mbps per participant, fanned out
+by JVB), not CPU. Bump memory if you expect larger rooms.
 
 ## Security notes
 
-- **Anyone with the URL can open a room.** That's how Jitsi works.
-  Require a room password (set inside the meeting) or enable JWT
-  auth if you want to restrict who can start a conference. The
-  [secure-domain](https://jitsi.github.io/handbook/docs/devops-guide/secure-domain/)
-  upstream guide walks through the latter.
-- OpenHost's owner-login gate is **disabled** for this app
-  (`public_paths = ["/"]` in the manifest). Participants don't have
-  OpenHost accounts, so gating at the router level would block every
-  guest.
-- Media (DTLS-SRTP over UDP/9500) is end-to-end encrypted between the
-  browser and JVB; JVB sees plaintext (it's an SFU, not an E2EE mixer).
-  Turn on [E2EE](https://jitsi.github.io/handbook/docs/user-guide/e2ee/)
-  in the meeting UI if you need peer-to-peer encryption.
+- **Anyone with the URL can open a room.** OpenHost's owner-login
+  gate is disabled for this app (`public_paths = ["/"]`) because
+  participants are typically random people you invited, not
+  OpenHost account holders. If you want to lock it down, enable
+  Jitsi's [secure-domain](https://jitsi.github.io/handbook/docs/devops-guide/secure-domain/)
+  mode via `ENABLE_AUTH=1` (not yet exposed as a first-class env var
+  in this wrapper — edit the Dockerfile ENV block).
+- Media (DTLS-SRTP over UDP/9500) is end-to-end encrypted between
+  browsers and JVB. JVB sees plaintext (SFU semantics). Turn on
+  [E2EE](https://jitsi.github.io/handbook/docs/user-guide/e2ee/) in
+  the meeting UI if you need peer-to-peer encryption.
 
 ## What's not included
 
-- **Jibri** (recording, live-streaming) — needs host-kernel ALSA
-  loopback and a headless Chrome per recording; incompatible with
-  OpenHost's one-container model.
-- **Jigasi** (SIP dial-in) — skipped for v1 to keep the container
-  smaller. Add via another apt-installed package if needed.
-- **Coturn** (TURN for clients that can't reach UDP/9500) — if your
-  users are behind restrictive corporate firewalls that block outgoing
-  UDP to non-standard ports, they'll fail to get media. Deploy a
-  separate TURN server (either elsewhere or as a second OpenHost app)
-  and wire it into the Jitsi config via `TURN_HOST`/`TURN_PORT`.
+- **Jibri** (recording, live-streaming) — requires host kernel ALSA
+  loopback and a headless Chrome per recording; not feasible in
+  OpenHost's one-container-per-app model.
+- **Jigasi** (SIP dial-in) — skipped for v1.
+- **External coturn** — if your users are behind restrictive
+  firewalls that block outgoing UDP to non-443 ports, they will
+  fail to get media through. Deploy a coturn separately and wire it
+  in via `TURN_HOST`/`TURN_PORT` env vars (exposed by the upstream
+  prosody template).
+- **Colibri WebSocket** — disabled (`ENABLE_COLIBRI_WEBSOCKET=0`).
+  JVB falls back to WebRTC DataChannels over SCTP, which works fine.
+  Re-enabling would require more work to wire up the nginx
+  `/colibri-ws/...` regex to a colocated JVB on 127.0.0.1.
 
 ## Licensing
 
 Jitsi Meet and its components are Apache 2.0. This wrapper repo is
-released under the same license.
+distributed under the same license.
