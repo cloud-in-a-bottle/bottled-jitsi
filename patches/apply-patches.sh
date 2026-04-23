@@ -168,23 +168,33 @@ sed -i \
 # proxy configurations, which causes strict client implementations
 # (including lib-jitsi-meet in Chrome/Firefox) to abort the
 # connection immediately after the WebSocket handshake.
+#
+# We use proxy_pass_header + a lua/perl helper? No -- simplest way
+# is to have nginx synthesize the subprotocol response header
+# outside of the proxy path. We use a map + add_header combo so the
+# header is emitted on any non-2xx response (add_header applies
+# only to 2xx/3xx by default; 'always' extends it to all codes
+# including 101 Switching Protocols).
 python3 - <<'PY'
 import pathlib
 p = pathlib.Path("/defaults/meet.conf")
 text = p.read_text()
-# Inject the add_header inside the /xmpp-websocket location block.
-# add_header inside an `if`-less location applies to 101 responses
-# as well. "always" is required for non-2xx responses; nginx treats
-# 101 as not-2xx by default.
+# Insert add_header inside the /xmpp-websocket location block. The
+# 'always' flag is required to make nginx include the header on the
+# 101 Switching Protocols response (which by default skips
+# non-2xx/3xx add_header directives).
 needle = 'location = /xmpp-websocket {'
 injection = (
     'location = /xmpp-websocket {\n'
-    '    # Always echo the xmpp subprotocol on the 101 response.\n'
-    '    # See: https://github.com/jitsi/docker-jitsi-meet/issues/XYZ.\n'
+    '    # Echo the client-requested xmpp subprotocol in the 101\n'
+    '    # response; strict WebSocket clients abort otherwise.\n'
     '    add_header Sec-WebSocket-Protocol "xmpp" always;\n'
+    '    more_set_headers "Sec-WebSocket-Protocol: xmpp";\n'
 )
+assert needle in text, "xmpp-websocket block not found"
 text = text.replace(needle, injection, 1)
 p.write_text(text)
+print("[patches] injected subprotocol header into meet.conf")
 PY
 
 # Make sure every services.d run script inherits container env. The
