@@ -166,6 +166,17 @@ RUN chmod +x /etc/cont-init.d/* /opt/openhost-jitsi/*.sh 2>/dev/null || true
 
 # ---------------------------------------------------------------- runtime
 EXPOSE 80
+# ENABLE_XMPP_WEBSOCKET=0: the OpenHost router's WebSocket proxy
+# accepts the client handshake without echoing the client's requested
+# subprotocol (it calls Quart's client_ws.accept() without passing
+# subprotocols through). Strict WebSocket clients -- including the
+# lib-jitsi-meet browser client -- treat a missing
+# Sec-WebSocket-Protocol response header as a protocol violation
+# and close the connection. We disable XMPP-over-WebSocket in the
+# rendered config.js and fall back to BOSH (HTTP long-polling), which
+# still works through OpenHost's HTTP proxy path. This is slightly
+# slower for signaling than WebSocket but indistinguishable to
+# end users.
 ENV DISABLE_HTTPS=1 \
     ENABLE_HTTP_REDIRECT=0 \
     ENABLE_IPV6=0 \
@@ -173,6 +184,7 @@ ENV DISABLE_HTTPS=1 \
     XMPP_BOSH_URL_BASE=http://127.0.0.1:5280 \
     DISABLE_COLIBRI_WEBSOCKET_JVB_LOOKUP=1 \
     ENABLE_COLIBRI_WEBSOCKET=0 \
+    ENABLE_XMPP_WEBSOCKET=0 \
     DISABLE_POLLS=1 \
     TZ=UTC
 
