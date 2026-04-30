@@ -155,20 +155,20 @@ def test_full_upload_lifecycle(running_server):
         assert resp.status == 200
 
     # listing reachable via admin token
-    code, html, _ = _get(f"{base}/{token}/")
+    code, html, _ = _get(f"{base}/_recordings/{token}/")
     assert code == 200
     assert b"test-room" in html
     assert b"alice" in html
 
     # download
-    code, content, headers = _get(f"{base}/{token}/recording/{rec_id}")
+    code, content, headers = _get(f"{base}/_recordings/{token}/recording/{rec_id}")
     assert code == 200
     assert content == payload1 + payload2
     assert headers.get("Content-Type") == "video/webm"
 
     # delete
-    assert _delete(f"{base}/{token}/recording/{rec_id}") == 200
-    code, _, _ = _get(f"{base}/{token}/recording/{rec_id}")
+    assert _delete(f"{base}/_recordings/{token}/recording/{rec_id}") == 200
+    code, _, _ = _get(f"{base}/_recordings/{token}/recording/{rec_id}")
     assert code == 404
 
 
@@ -194,7 +194,7 @@ def test_admin_token_required_for_listing(running_server):
     # Wrong token; has the right shape (>=24 chars base64-url) so the
     # upstream nginx fragment would proxy it, but the sidecar checks
     # the value.
-    code, body, _ = _get(f"{base}/this-is-not-the-real-admin-token/")
+    code, body, _ = _get(f"{base}/_recordings/this-is-not-the-real-admin-token/")
     assert code == 404
 
 
@@ -205,7 +205,7 @@ def test_unfinalized_recording_not_downloadable(running_server):
     rec_id = body["id"]
     _post_bytes(f"{base}/api/recordings/{rec_id}/chunk", b"data")
     # No finalize.
-    code, _, _ = _get(f"{base}/{token}/recording/{rec_id}")
+    code, _, _ = _get(f"{base}/_recordings/{token}/recording/{rec_id}")
     assert code == 404
 
 
@@ -331,7 +331,7 @@ def test_finalize_repairs_after_metadata_write_failure(tmp_path: Path, running_s
         assert r.status == 200
 
     # Recording is now downloadable.
-    code, _, _ = _get(f"{running_server['base']}/{running_server['token']}/recording/{rec_id}")
+    code, _, _ = _get(f"{running_server['base']}/_recordings/{running_server['token']}/recording/{rec_id}")
     assert code == 200
 
 
@@ -366,7 +366,7 @@ def test_admin_delete_with_wrong_token_returns_404(running_server):
     token. Regression guard for the secrets.compare_digest check."""
     base = running_server["base"]
     bogus = "this-is-not-the-actual-admin-token-but-long-enough"
-    code = _delete(f"{base}/{bogus}/recording/0123456789abcdef")
+    code = _delete(f"{base}/_recordings/{bogus}/recording/0123456789abcdef")
     assert code == 404
 
 
@@ -430,7 +430,7 @@ def test_listing_shows_uploading_state_for_unfinalized(running_server):
     rec_id = body["id"]
     _post_bytes(f"{base}/api/recordings/{rec_id}/chunk", b"partial")
 
-    code, html_body, _ = _get(f"{base}/{token}/")
+    code, html_body, _ = _get(f"{base}/_recordings/{token}/")
     text = html_body.decode("utf-8")
     assert "midway" in text
     assert "uploading" in text
@@ -457,7 +457,7 @@ def test_chunk_rejects_oversized_content_length(running_server):
 def test_delete_unknown_id_returns_404(running_server):
     base = running_server["base"]
     token = running_server["token"]
-    code = _delete(f"{base}/{token}/recording/0123456789abcdef")
+    code = _delete(f"{base}/_recordings/{token}/recording/0123456789abcdef")
     assert code == 404
 
 
@@ -474,7 +474,7 @@ def test_delete_unfinalized_removes_tmp(running_server):
     assert (rec_dir / f"{rec_id}.webm.tmp").exists()
     assert (rec_dir / f"{rec_id}.json").exists()
 
-    assert _delete(f"{base}/{token}/recording/{rec_id}") == 200
+    assert _delete(f"{base}/_recordings/{token}/recording/{rec_id}") == 200
     assert not (rec_dir / f"{rec_id}.webm.tmp").exists()
     assert not (rec_dir / f"{rec_id}.json").exists()
 
@@ -519,7 +519,7 @@ def test_chunk_after_admin_delete_does_not_resurrect(running_server):
     rec_id = body["id"]
     _post_bytes(f"{base}/api/recordings/{rec_id}/chunk", b"first")
 
-    assert _delete(f"{base}/{token}/recording/{rec_id}") == 200
+    assert _delete(f"{base}/_recordings/{token}/recording/{rec_id}") == 200
     assert not (rec_dir / f"{rec_id}.json").exists()
 
     # A late chunk POST should NOT recreate metadata.

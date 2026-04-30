@@ -129,27 +129,15 @@ container writes to its logs on startup:
 
     oh app logs jitsi | grep "recordings listing URL"
 
-The URL has the form `https://<your-jitsi>/<admin-token>/`. Treat
-it like a password — anyone with the URL can list, download, and
-delete every recording. The admin token is auto-generated on first
-boot and persists in app data; rotate it by deleting
+The URL has the form `https://<your-jitsi>/_recordings/<admin-token>/`.
+Treat it like a password — anyone with the URL can list, download,
+and delete every recording. The admin token is auto-generated on
+first boot and persists in app data; rotate it by deleting
 `$OPENHOST_APP_DATA_DIR/recordings_admin_token` and restarting.
 
 Disk usage is capped at 5 GiB by default, with oldest-first
 eviction. Tmp uploads-in-progress count against the cap too, so a
 flood of unfinalized uploads can't bypass it.
-
-### Caveat: long room names
-
-The nginx fragment that routes admin requests to the sidecar uses a
-single-segment regex match on `^/[A-Za-z0-9_-]{24,}/?$` — anything
-in the first path segment with 24+ base64url characters is sent to
-the sidecar. **Avoid choosing a Jitsi room name that's 24+ characters
-of `[A-Za-z0-9_-]` only** (no spaces or other punctuation), or it'll
-be routed to the recordings sidecar and 404 instead of opening a
-meeting. Most user-friendly room names are well under this length;
-auto-generated UUID-style names (32 hex chars, no hyphens) are the
-realistic collision case to avoid.
 
 ## What's not included
 

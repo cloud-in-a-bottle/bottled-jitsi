@@ -86,29 +86,11 @@ location ^~ /api/recordings/ {
     proxy_send_timeout 300s;
 }
 
-# Admin endpoints rooted at /<admin_token>/. The sidecar enforces
-# the token equality check internally; we proxy any single-segment
-# prefix path so the listing URL works.  The matching room-name
-# location below this in meet.conf would otherwise swallow it.
-#
-# We can't easily filter by token value at the nginx layer (it
-# changes per deploy), so we proxy everything here that:
-#   * has at least 24 chars in the first segment (admin token is
-#     32 base64 chars; jitsi room names tend to be shorter and
-#     contain user-friendly words), AND
-#   * looks like base64-url
-# False positives just hit the sidecar's 404 path; false negatives
-# (legitimate admin URLs that don't match the heuristic) would be
-# routed to jitsi as a room name. To avoid that: don't pick a room
-# name longer than 23 chars OR matching ^[A-Za-z0-9_-]{24,}$.
-location ~ "^/[A-Za-z0-9_-]{24,}/?$" {
-    proxy_pass http://127.0.0.1:5060;
-    proxy_http_version 1.1;
-    proxy_set_header Host $host;
-    proxy_set_header X-Forwarded-For $remote_addr;
-}
-
-location ~ "^/[A-Za-z0-9_-]{24,}/recording/[a-f0-9]{16}$" {
+# Admin endpoints under /_recordings/<token>/... The leading
+# underscore prevents collision with Jitsi room names (Jitsi's URL
+# room name generator only emits lowercase letters, so an
+# underscore-prefixed path can never be a valid room).
+location ^~ /_recordings/ {
     proxy_pass http://127.0.0.1:5060;
     proxy_http_version 1.1;
     proxy_set_header Host $host;
@@ -149,8 +131,8 @@ log "config written: $REC_DIR (data dir), $ADMIN_TOKEN_FILE (admin token)"
 if [[ -s "$ADMIN_TOKEN_FILE" ]]; then
     TOKEN="$(cat "$ADMIN_TOKEN_FILE")"
     if [[ -n "$ORIGIN_HINT" ]]; then
-        log "recordings listing URL: $ORIGIN_HINT/$TOKEN/"
+        log "recordings listing URL: $ORIGIN_HINT/_recordings/$TOKEN/"
     else
-        log "recordings listing URL: /$TOKEN/  (relative to the jitsi origin)"
+        log "recordings listing URL: /_recordings/$TOKEN/  (relative to the jitsi origin)"
     fi
 fi
