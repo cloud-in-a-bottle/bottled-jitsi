@@ -90,6 +90,24 @@ JVB_AUTH_PASSWORD_VAL="$(persist_password JVB_AUTH_PASSWORD)"
 if [[ "${ENABLE_RECORDING:-}" == "1" ]]; then
     JIBRI_XMPP_PASSWORD_VAL="$(persist_password JIBRI_XMPP_PASSWORD)"
     JIBRI_RECORDER_PASSWORD_VAL="$(persist_password JIBRI_RECORDER_PASSWORD)"
+
+    # Chrome flags Jibri will pass to chromedriver. The upstream
+    # /defaults/jibri.conf template renders these into jibri.conf
+    # iff CHROMIUM_FLAGS is set; otherwise it falls back to a
+    # default list that omits --disable-infobars and lets the
+    # "Chrome is being controlled by automated test software"
+    # banner appear in recordings.
+    #
+    # The list below is the upstream default plus three additions:
+    #   --disable-infobars                  hides the automation infobar
+    #   --disable-blink-features=AutomationControlled
+    #                                        hides navigator.webdriver hints
+    #   --no-default-browser-check          avoids a first-run popup
+    #
+    # We keep --use-fake-ui-for-media-stream so getUserMedia auto-grants;
+    # --kiosk for full-screen recording; --autoplay-policy=no-user-gesture-required
+    # so jitsi's media autoplays without a click.
+    CHROMIUM_FLAGS_VAL="--use-fake-ui-for-media-stream,--start-maximized,--kiosk,--enabled,--autoplay-policy=no-user-gesture-required,--disable-infobars,--disable-blink-features=AutomationControlled,--no-default-browser-check,--no-first-run"
 fi
 
 # -------------------------------------------------------------- JVB addr
@@ -138,6 +156,7 @@ printf '%s' "$JICOFO_COMPONENT_SECRET_VAL" > "$CENV/JICOFO_COMPONENT_SECRET"
 printf '%s' "$JVB_AUTH_PASSWORD_VAL"      > "$CENV/JVB_AUTH_PASSWORD"
 [[ -n "${JIBRI_XMPP_PASSWORD_VAL:-}" ]] && printf '%s' "$JIBRI_XMPP_PASSWORD_VAL" > "$CENV/JIBRI_XMPP_PASSWORD"
 [[ -n "${JIBRI_RECORDER_PASSWORD_VAL:-}" ]] && printf '%s' "$JIBRI_RECORDER_PASSWORD_VAL" > "$CENV/JIBRI_RECORDER_PASSWORD"
+[[ -n "${CHROMIUM_FLAGS_VAL:-}" ]] && printf '%s' "$CHROMIUM_FLAGS_VAL" > "$CENV/CHROMIUM_FLAGS"
 [[ -n "$JVB_ADVERTISE_IPS_VAL" ]] && printf '%s' "$JVB_ADVERTISE_IPS_VAL" > "$CENV/JVB_ADVERTISE_IPS"
 # JVB_PORT defaults to 10000 in the upstream templates; we pin 9500
 # to match the [[ports]] entry in openhost.toml (OpenHost only allows
