@@ -48,12 +48,10 @@ EOF
 chmod +x /etc/services.d/recordings/run
 
 # Custom nginx fragment that proxies our two URL prefixes to the
-# sidecar.  The upstream meet.conf already does
-#     include /config/nginx-custom/*.conf;
-# so as long as we drop the file there before nginx (re)starts, it
-# gets loaded. Both prefixes are server-rooted, so they win against
-# the catch-all room-name location at the bottom of meet.conf, which
-# matches a single path segment.
+# sidecar. stable-9955's meet.conf does NOT have an
+# `include /config/nginx-custom/*.conf` directive (it's a more
+# recent upstream addition), so we both write the fragment and
+# inject the include into the rendered meet.conf.
 mkdir -p /config/web/nginx-custom
 cat > /config/web/nginx-custom/openhost-recordings.conf <<'EOF'
 # Proxy /api/recordings/{init,<id>/chunk,<id>/finalize} and the
@@ -107,6 +105,28 @@ location ~ ^/[A-Za-z0-9_-]{24,}/recording/[a-f0-9]{16}$ {
     proxy_read_timeout 600s;
 }
 EOF
+
+# Inject the include directive into the rendered meet.conf if it's
+# not already there. The include must be inside the server { ... }
+# block; we anchor on the `client_max_body_size 0;` line near the
+# top, which has appeared in every meet.conf revision since at least
+# stable-8252.
+MEET_CONF=/config/web/nginx/meet.conf
+if [[ -f "$MEET_CONF" ]] && ! grep -q "/config/web/nginx-custom" "$MEET_CONF"; then
+    python3 - "$MEET_CONF" <<'PY'
+import sys, pathlib
+p = pathlib.Path(sys.argv[1])
+text = p.read_text()
+needle = "client_max_body_size 0;"
+if needle in text:
+    inj = "include /config/web/nginx-custom/*.conf;"
+    text = text.replace(needle, needle + "\n\n" + inj, 1)
+    p.write_text(text)
+    print("[recordings-init] injected nginx-custom include into meet.conf", file=sys.stderr)
+else:
+    print("[recordings-init] WARNING: could not inject include — anchor missing", file=sys.stderr)
+PY
+fi
 
 log "config written: $REC_DIR (data dir), $ADMIN_TOKEN_FILE (admin token)"
 
