@@ -30,6 +30,16 @@
         try { console.log.apply(console, ['[openhost-recordings]'].concat([].slice.call(arguments))); } catch (e) {}
     }
 
+    // Strip HTML metacharacters from text we plan to drop into innerHTML
+    // alongside trusted markup. Used because callers compose strings
+    // like 'Uploading… (' + pct + '%)' and the 'pct' or error message
+    // half could in principle contain server-controlled bytes.
+    function safeText(s) {
+        var d = document.createElement('div');
+        d.textContent = String(s == null ? '' : s);
+        return d.innerHTML;
+    }
+
     function showNotice(text, opts) {
         opts = opts || {};
         var existing = document.getElementById('openhost-recording-notice');
@@ -43,6 +53,10 @@
             'font-family:-apple-system,system-ui,sans-serif', 'font-size:0.9em',
             'max-width:32em', 'line-height:1.4'
         ].join(';');
+        // Callers pass already-trusted markup (string templates with
+        // safeText() applied to dynamic substrings); innerHTML is fine
+        // here. Adding any new caller? Wrap dynamic content in
+        // safeText() first.
         div.innerHTML = text;
         document.body.appendChild(div);
         if (opts.autoHideMs) {
@@ -69,11 +83,16 @@
                 var local = s['features/base/participants'] && s['features/base/participants'].local;
                 if (local && local.name) return String(local.name);
             }
-        } catch (e) {}
+        } catch (e) {
+            log('getStartedBy error', e);
+        }
         return 'anonymous';
     }
 
     async function uploadBlob(blob) {
+        if (!blob || blob.size === 0) {
+            throw new Error('empty recording (nothing was captured)');
+        }
         var room = getRoomName();
         var startedBy = getStartedBy();
         var notice = showNotice('Uploading recording &hellip; (0%)');
@@ -109,7 +128,7 @@
             sent = end;
             idx += 1;
             var pct = Math.floor(sent * 100 / total);
-            notice.innerHTML = 'Uploading recording &hellip; (' + pct + '%)';
+            notice.innerHTML = 'Uploading recording &hellip; (' + safeText(pct) + '%)';
         }
 
         var finResp = await fetch('/api/recordings/' + id + '/finalize', {
@@ -153,10 +172,10 @@
             if (!download || !/\.webm($|\?)/i.test(download) || !/^blob:/i.test(href)) {
                 return originalClick.apply(this, arguments);
             }
+            var anchor = this; // captured for the async closure; `this` inside it is undefined under strict mode
             var anchorHref = href;
             var anchorDownload = download;
             log('intercepting recording download', anchorDownload);
-            // Pull the blob from the URL, then upload.
             (async function () {
                 var blob;
                 try {
@@ -165,19 +184,26 @@
                 } catch (e) {
                     log('failed to read blob; falling back to download', e);
                     showNotice('Could not read recording for upload; saving locally instead.', { autoHideMs: 8000 });
-                    return originalClick.apply(this, []);
+                    try { originalClick.apply(anchor, []); } catch (e2) { log('native click also failed', e2); }
+                    return;
                 }
                 try {
                     await uploadBlob(blob);
                 } catch (e) {
                     log('upload failed; falling back to download', e);
                     showNotice(
-                        'Upload failed (' + (e.message || e) + '). Saving locally instead.',
+                        'Upload failed (' + safeText(e && e.message ? e.message : String(e)) + '). Saving locally instead.',
                         { autoHideMs: 12000 }
                     );
                     fallbackDownload(blob, anchorDownload);
+                } finally {
+                    // Jitsi's blob URL holds the full recording in memory;
+                    // release it once we're done with the bytes.
+                    try { URL.revokeObjectURL(anchorHref); } catch (e) {}
                 }
-            })();
+            })().catch(function (e) {
+                log('unexpected error in upload pipeline', e);
+            });
         } catch (e) {
             log('hook error; falling back to native click', e);
             return originalClick.apply(this, arguments);

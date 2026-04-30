@@ -279,3 +279,102 @@ def test_admin_token_persisted(tmp_path: Path):
     assert len(t1) > 20
     t2 = rec_server._load_or_create_admin_token(f)
     assert t1 == t2  # same token across calls
+
+
+# ---- security: oversized chunk rejection ---------------------------------
+
+
+def test_chunk_rejects_oversized_content_length(running_server):
+    """A client can't trigger preemptive eviction by claiming a huge
+    Content-Length on a single chunk request."""
+    base = running_server["base"]
+    code, body = _post_json(f"{base}/api/recordings/init", {"room": "victim"})
+    rec_id = body["id"]
+
+    # Craft a request that claims 64 MiB but sends only a few bytes.
+    # We don't actually need to send the body — the handler should
+    # reject before reading.
+    req = urllib.request.Request(
+        f"{base}/api/recordings/{rec_id}/chunk",
+        data=b"x",
+        headers={
+            "Content-Type": "application/octet-stream",
+            "Content-Length": str(64 * 1024 * 1024),
+        },
+        method="POST",
+    )
+    # urlopen will adjust Content-Length based on data; bypass by
+    # using a low-level connection.
+    import http.client
+    from urllib.parse import urlparse as _urlparse
+
+    parts = _urlparse(base)
+    conn = http.client.HTTPConnection(parts.hostname, parts.port, timeout=10)
+    conn.request(
+        "POST",
+        f"/api/recordings/{rec_id}/chunk",
+        body=b"x",
+        headers={
+            "Content-Type": "application/octet-stream",
+            "Content-Length": str(64 * 1024 * 1024),
+        },
+    )
+    resp = conn.getresponse()
+    assert resp.status == 413
+    conn.close()
+
+
+# ---- DELETE edge cases ----------------------------------------------------
+
+
+def test_delete_unknown_id_returns_404(running_server):
+    base = running_server["base"]
+    token = running_server["token"]
+    code = _delete(f"{base}/{token}/recording/0123456789abcdef")
+    assert code == 404
+
+
+def test_delete_unfinalized_removes_tmp(running_server):
+    """An admin can delete an in-progress (unfinalized) recording;
+    the .webm.tmp and .json files should be removed."""
+    base = running_server["base"]
+    token = running_server["token"]
+    rec_dir = running_server["rec_dir"]
+    code, body = _post_json(f"{base}/api/recordings/init", {"room": "midway"})
+    rec_id = body["id"]
+    _post_bytes(f"{base}/api/recordings/{rec_id}/chunk", b"partial")
+
+    assert (rec_dir / f"{rec_id}.webm.tmp").exists()
+    assert (rec_dir / f"{rec_id}.json").exists()
+
+    assert _delete(f"{base}/{token}/recording/{rec_id}") == 200
+    assert not (rec_dir / f"{rec_id}.webm.tmp").exists()
+    assert not (rec_dir / f"{rec_id}.json").exists()
+
+
+# ---- empty / large input edge cases --------------------------------------
+
+
+def test_chunk_rejects_zero_length(running_server):
+    """Content-Length: 0 isn't a valid chunk."""
+    base = running_server["base"]
+    code, body = _post_json(f"{base}/api/recordings/init", {"room": "r"})
+    rec_id = body["id"]
+
+    import http.client
+    from urllib.parse import urlparse as _urlparse
+
+    parts = _urlparse(base)
+    conn = http.client.HTTPConnection(parts.hostname, parts.port, timeout=10)
+    conn.request(
+        "POST",
+        f"/api/recordings/{rec_id}/chunk",
+        body=b"",
+        headers={
+            "Content-Type": "application/octet-stream",
+            "Content-Length": "0",
+        },
+    )
+    resp = conn.getresponse()
+    assert resp.status == 400
+    conn.close()

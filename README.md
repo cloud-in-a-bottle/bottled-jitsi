@@ -32,6 +32,8 @@ upstream maintains and tests.
                                        meet.conf           │
                                          ├── /http-bind ─▶ prosody :5280
                                          ├── /xmpp-ws   ─▶ prosody :5280
+                                         ├── /api/recordings/* ─▶ recordings :5060
+                                         ├── /<admin>/...   ─▶ recordings :5060
                                          └── static JS (Jitsi SPA)
                                                           ▲│
                                                    XMPP   ││
@@ -104,11 +106,55 @@ by JVB), not CPU. Bump memory if you expect larger rooms.
   [E2EE](https://jitsi.github.io/handbook/docs/user-guide/e2ee/) in
   the meeting UI if you need peer-to-peer encryption.
 
+## Recording
+
+Browser-side local recording with server-side persistence is built
+in. Click the toolbar's overflow menu → **Start recording** → **Me**
+or **All participants**, then **Stop recording** when done. The
+resulting WebM is uploaded to a small Python sidecar inside the
+container and stored under `$OPENHOST_APP_DATA_DIR/recordings/`.
+
+This is **not** Jibri. The recorder's browser captures and encodes
+the meeting (so quality depends on their CPU and network); the
+server only stores the bytes. Practical implications:
+
+- The recorder must keep their tab open until the upload finishes.
+  A 1-hour 720p recording is ~500 MB-1 GB, so the upload itself
+  can take a few minutes on a typical residential connection.
+- If the recorder closes the tab mid-meeting, the recording is lost.
+- Live streaming (RTMP) is not supported.
+
+To access recordings, the host needs the **admin URL** that the
+container writes to its logs on startup:
+
+    oh app logs jitsi | grep "recordings listing URL"
+
+The URL has the form `https://<your-jitsi>/<admin-token>/`. Treat
+it like a password — anyone with the URL can list, download, and
+delete every recording. The admin token is auto-generated on first
+boot and persists in app data; rotate it by deleting
+`$OPENHOST_APP_DATA_DIR/recordings_admin_token` and restarting.
+
+Disk usage is capped at 5 GB by default, with oldest-first eviction.
+
+### Caveat: long room names
+
+The nginx fragment that routes admin requests to the sidecar uses a
+single-segment regex match on `^/[A-Za-z0-9_-]{24,}/?$` — anything
+in the first path segment with 24+ base64url characters is sent to
+the sidecar. **Avoid choosing a Jitsi room name that's 24+ characters
+of `[A-Za-z0-9_-]` only** (no spaces or other punctuation), or it'll
+be routed to the recordings sidecar and 404 instead of opening a
+meeting. Most user-friendly room names are well under this length;
+auto-generated UUID-style names (32 hex chars, no hyphens) are the
+realistic collision case to avoid.
+
 ## What's not included
 
-- **Jibri** (recording, live-streaming) — requires host kernel ALSA
-  loopback and a headless Chrome per recording; not feasible in
-  OpenHost's one-container-per-app model.
+- **Jibri** (server-side recording, live-streaming) — requires host
+  kernel ALSA loopback and a headless Chrome per recording; not
+  feasible in OpenHost's one-container-per-app model. The
+  browser-side flow above is the alternative.
 - **Jigasi** (SIP dial-in) — skipped for v1.
 - **External coturn** — if your users are behind restrictive
   firewalls that block outgoing UDP to non-443 ports, they will
