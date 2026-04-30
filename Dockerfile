@@ -142,10 +142,13 @@ COPY --from=jvb-src     /etc/cont-init.d/10-config        /etc/cont-init.d/12-jv
 # ~150MB of layer churn and pins us to the same Chrome version
 # upstream tested with stable-9955.
 COPY --from=jibri-src /opt/google                          /opt/google
-COPY --from=jibri-src /usr/bin/google-chrome               /usr/bin/google-chrome
-COPY --from=jibri-src /usr/bin/google-chrome-stable        /usr/bin/google-chrome-stable
-COPY --from=jibri-src /usr/local/bin/chromedriver          /usr/local/bin/chromedriver
+COPY --from=jibri-src /usr/bin/chromedriver                /usr/bin/chromedriver
 COPY --from=jibri-src /usr/bin/shm-check                   /usr/bin/shm-check
+# google-chrome is normally a symlink via /etc/alternatives in the
+# jibri image; recreate it directly here so we don't have to copy
+# the alternatives infra.
+RUN ln -sf /opt/google/chrome/google-chrome /usr/bin/google-chrome && \
+    ln -sf /opt/google/chrome/google-chrome /usr/bin/google-chrome-stable
 # Defaults templates
 COPY --from=jibri-src /defaults/jibri.conf                 /defaults/jibri.conf
 COPY --from=jibri-src /defaults/xmpp.conf                  /defaults/jibri-xmpp.conf
