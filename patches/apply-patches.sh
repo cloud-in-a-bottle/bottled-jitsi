@@ -288,6 +288,26 @@ new = (
     "    # location); rewrite to point at the per-instance file.\n"
     "    sed -i \"s#include \\\"xmpp.conf\\\"#include \\\"xmpp-${i}.conf\\\"#g\" \\\n"
     "        \"/etc/jitsi/jibri/jibri-${i}.conf\"\n"
+    "    # Override jibri.ffmpeg.input-linux to use this instance's\n"
+    "    # X display (:N) instead of the hardcoded :0.0 in jibri's\n"
+    "    # reference.conf. Without this, ALL instances' ffmpegs grab\n"
+    "    # frames from display :0, so only one recording captures the\n"
+    "    # right meeting and the others get a black screen of jibri-0\n"
+    "    # OR fail entirely (multi-process x11grab on the same display\n"
+    "    # is undefined behavior).\n"
+    "    cat >> \"/etc/jitsi/jibri/jibri-${i}.conf\" <<EOF\n"
+    "jibri.ffmpeg.input-linux = [\n"
+    "    \"-f\", \"x11grab\",\n"
+    "    \"-draw_mouse\", \"0\",\n"
+    "    \"-r\", \\${jibri.ffmpeg.framerate},\n"
+    "    \"-s\", \\${jibri.ffmpeg.resolution},\n"
+    "    \"-thread_queue_size\", \\${jibri.ffmpeg.queue-size},\n"
+    "    \"-i\", \":${i}.0+0,0\",\n"
+    "    \"-f\", \\${jibri.ffmpeg.audio-source},\n"
+    "    \"-thread_queue_size\", \\${jibri.ffmpeg.queue-size},\n"
+    "    \"-i\", \\${jibri.ffmpeg.audio-device}\n"
+    "]\n"
+    "EOF\n"
     "done\n"
 )
 assert old in text, "could not find tpl block in 16-jibri-config to replace"
@@ -377,10 +397,18 @@ mkdir -p "$PULSE_RUNTIME_PATH"
 chown jibri:jibri "$PULSE_RUNTIME_PATH"
 export PULSE_RUNTIME_PATH HOME
 
-# The default daemon.conf logs to /config/logs/pulse.log; rewrite
-# at startup to a per-instance path via --log-target.
+# We wrap pulseaudio in dbus-run-session so each instance gets its
+# own private session-bus.  Without this, the second and subsequent
+# pulse instances fail to load module-virtual-sink (jibri-loop) with
+# "D-Bus name org.PulseAudio1 already taken" — pulse uses an internal
+# D-Bus connection for module IPC and only one process per session
+# bus can hold the org.PulseAudio1 name.  The result is that the
+# jibri-loop sink (which ffmpeg pulls audio from via its monitor)
+# is unloaded immediately after creation, and jibri's next recording
+# start fails with "default: No such process" from ffmpeg.
 exec s6-setuidgid jibri /bin/bash -c \
-    "PULSE_RUNTIME_PATH='$PULSE_RUNTIME_PATH' exec /usr/bin/pulseaudio \
+    "PULSE_RUNTIME_PATH='$PULSE_RUNTIME_PATH' \
+     exec dbus-run-session -- /usr/bin/pulseaudio \
         --log-target=file:/config/logs-${INSTANCE_INDEX}/pulse.log"
 RUN
 
