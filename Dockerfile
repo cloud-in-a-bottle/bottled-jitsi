@@ -69,7 +69,7 @@ RUN apt-dpkg-wrap apt-get update && \
         jibri \
         libgl1-mesa-dri pulseaudio dbus dbus-x11 rtkit \
         unzip fonts-noto fonts-noto-cjk libcap2-bin \
-        xserver-xorg-core xserver-xorg-video-dummy xserver-xorg-input-void \
+        xserver-xorg-core xserver-xorg-video-dummy \
         x11-xserver-utils icewm procps && \
     apt-cleanup && \
     rm -rf /var/lib/apt/lists/* && \
