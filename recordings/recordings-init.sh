@@ -91,14 +91,14 @@ location ^~ /api/recordings/ {
 # (legitimate admin URLs that don't match the heuristic) would be
 # routed to jitsi as a room name. To avoid that: don't pick a room
 # name longer than 23 chars OR matching ^[A-Za-z0-9_-]{24,}$.
-location ~ ^/[A-Za-z0-9_-]{24,}/?$ {
+location ~ "^/[A-Za-z0-9_-]{24,}/?$" {
     proxy_pass http://127.0.0.1:5060;
     proxy_http_version 1.1;
     proxy_set_header Host $host;
     proxy_set_header X-Forwarded-For $remote_addr;
 }
 
-location ~ ^/[A-Za-z0-9_-]{24,}/recording/[a-f0-9]{16}$ {
+location ~ "^/[A-Za-z0-9_-]{24,}/recording/[a-f0-9]{16}$" {
     proxy_pass http://127.0.0.1:5060;
     proxy_http_version 1.1;
     proxy_set_header Host $host;
