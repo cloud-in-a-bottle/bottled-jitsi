@@ -159,8 +159,12 @@ COPY --from=jibri-src /etc/services.d/10-xorg/             /etc/services.d/15-ji
 COPY --from=jibri-src /etc/services.d/30-pulse/            /etc/services.d/16-jibri-pulse/
 COPY --from=jibri-src /etc/services.d/40-jibri/            /etc/services.d/17-jibri/
 COPY --from=jibri-src /etc/cont-init.d/10-config           /etc/cont-init.d/16-jibri-config
-# jibri also wants a small dotfile in $HOME for ALSA loopback
+# jibri also wants a small dotfile in $HOME for ALSA loopback,
+# pulse config, and the icewm config the upstream image relies on.
+# The COPY preserves contents but not ownership, so we re-chown
+# to the jibri user (the apt postinst created jibri:jibri).
 COPY --from=jibri-src /home/jibri/                         /home/jibri/
+RUN chown -R jibri:jibri /home/jibri
 
 # web -----------------------------------------------------------------
 COPY --from=web-src     /defaults/default                 /defaults/nginx-default.conf
