@@ -7,7 +7,7 @@ with urllib. No mocks except where we want to inject crash conditions.
 from __future__ import annotations
 
 import json
-import shutil
+import os
 import socket
 import threading
 import time
@@ -98,6 +98,30 @@ def _delete(url: str) -> int:
             return resp.status
     except urllib.error.HTTPError as e:
         return e.code
+
+
+def _post_raw_chunk(base: str, path: str, body: bytes, declared_len: int) -> int:
+    """Send a chunk POST with an explicit Content-Length that may not
+    match the body. Used to drive fail-fast paths."""
+    import http.client
+    from urllib.parse import urlparse as _urlparse
+
+    parts = _urlparse(base)
+    conn = http.client.HTTPConnection(parts.hostname, parts.port, timeout=10)
+    try:
+        conn.request(
+            "POST",
+            path,
+            body=body,
+            headers={
+                "Content-Type": "application/octet-stream",
+                "Content-Length": str(declared_len),
+            },
+        )
+        resp = conn.getresponse()
+        return resp.status
+    finally:
+        conn.close()
 
 
 # ---- happy path -----------------------------------------------------------
@@ -281,6 +305,71 @@ def test_admin_token_persisted(tmp_path: Path):
     assert t1 == t2  # same token across calls
 
 
+def test_finalize_repairs_after_metadata_write_failure(tmp_path: Path, running_server):
+    """If a previous finalize did the rename but crashed before
+    persisting `finalized=True`, a retry must repair the metadata
+    rather than 410'ing the recording into oblivion."""
+    base = running_server["base"]
+    rec_dir = running_server["rec_dir"]
+
+    code, body = _post_json(f"{base}/api/recordings/init", {"room": "interrupted"})
+    rec_id = body["id"]
+    _post_bytes(f"{base}/api/recordings/{rec_id}/chunk", b"hello world")
+
+    # Simulate the half-finalized state: rename done, meta still
+    # says finalized=False.
+    tmp = rec_dir / f"{rec_id}.webm.tmp"
+    final = rec_dir / f"{rec_id}.webm"
+    os.replace(tmp, final)
+    # meta's still {finalized: False}
+
+    # Retry finalize: repair branch should kick in.
+    req = urllib.request.Request(
+        f"{base}/api/recordings/{rec_id}/finalize", method="POST"
+    )
+    with urllib.request.urlopen(req, timeout=5) as r:
+        assert r.status == 200
+
+    # Recording is now downloadable.
+    code, _, _ = _get(f"{running_server['base']}/{running_server['token']}/recording/{rec_id}")
+    assert code == 200
+
+
+def test_sweep_removes_unfinalized_with_no_tmp(tmp_path: Path):
+    """Metadata for an unfinalized recording whose .webm.tmp was
+    deleted (interrupted upload, container restart, etc.) must be
+    cleaned up by the orphan sweep — otherwise it stays as a stale
+    'uploading' entry forever."""
+    rec_dir = tmp_path / "rec"
+    rec_dir.mkdir()
+    rec_id = "abcdef0123456789"
+    (rec_dir / f"{rec_id}.json").write_text(
+        json.dumps({"id": rec_id, "finalized": False, "started_at": "2026-01-01T00:00:00+00:00"})
+    )
+    # No .webm.tmp.
+    rec_server._sweep_orphans(rec_dir)
+    assert not (rec_dir / f"{rec_id}.json").exists()
+
+
+def test_sweep_removes_orphan_json_tmp(tmp_path: Path):
+    """*.json.tmp files left behind by an interrupted atomic metadata
+    write should be cleared on startup."""
+    rec_dir = tmp_path / "rec"
+    rec_dir.mkdir()
+    (rec_dir / "abcdef0123456789.json.tmp").write_text("{}")
+    rec_server._sweep_orphans(rec_dir)
+    assert not list(rec_dir.glob("*.json.tmp"))
+
+
+def test_admin_delete_with_wrong_token_returns_404(running_server):
+    """The admin DELETE path must reject a wrong-but-valid-shape
+    token. Regression guard for the secrets.compare_digest check."""
+    base = running_server["base"]
+    bogus = "this-is-not-the-actual-admin-token-but-long-enough"
+    code = _delete(f"{base}/{bogus}/recording/0123456789abcdef")
+    assert code == 404
+
+
 # ---- security: oversized chunk rejection ---------------------------------
 
 
@@ -290,38 +379,8 @@ def test_chunk_rejects_oversized_content_length(running_server):
     base = running_server["base"]
     code, body = _post_json(f"{base}/api/recordings/init", {"room": "victim"})
     rec_id = body["id"]
-
-    # Craft a request that claims 64 MiB but sends only a few bytes.
-    # We don't actually need to send the body — the handler should
-    # reject before reading.
-    req = urllib.request.Request(
-        f"{base}/api/recordings/{rec_id}/chunk",
-        data=b"x",
-        headers={
-            "Content-Type": "application/octet-stream",
-            "Content-Length": str(64 * 1024 * 1024),
-        },
-        method="POST",
-    )
-    # urlopen will adjust Content-Length based on data; bypass by
-    # using a low-level connection.
-    import http.client
-    from urllib.parse import urlparse as _urlparse
-
-    parts = _urlparse(base)
-    conn = http.client.HTTPConnection(parts.hostname, parts.port, timeout=10)
-    conn.request(
-        "POST",
-        f"/api/recordings/{rec_id}/chunk",
-        body=b"x",
-        headers={
-            "Content-Type": "application/octet-stream",
-            "Content-Length": str(64 * 1024 * 1024),
-        },
-    )
-    resp = conn.getresponse()
-    assert resp.status == 413
-    conn.close()
+    status = _post_raw_chunk(base, f"/api/recordings/{rec_id}/chunk", b"x", 64 * 1024 * 1024)
+    assert status == 413
 
 
 # ---- DELETE edge cases ----------------------------------------------------
@@ -374,29 +433,11 @@ def test_unfinalized_uploads_count_against_quota(running_server):
     code, body = _post_json(f"{base}/api/recordings/init", {"room": "c"})
     rec_c = body["id"]
 
-    # Use http.client directly so we can observe the 507 even though
-    # our handler short-circuits before reading the body (urllib's
-    # higher-level urlopen sees the early-close as a broken pipe).
-    import http.client
-    from urllib.parse import urlparse as _urlparse
-
     # Probe with a tiny body but a Content-Length claiming 4 MiB.
     # Server's fail-fast check (which only inspects Content-Length,
     # not the body) returns 507 immediately, before reading any bytes.
-    parts = _urlparse(base)
-    conn = http.client.HTTPConnection(parts.hostname, parts.port, timeout=10)
-    conn.request(
-        "POST",
-        f"/api/recordings/{rec_c}/chunk",
-        body=b"x",
-        headers={
-            "Content-Type": "application/octet-stream",
-            "Content-Length": str(4 * 1024 * 1024),
-        },
-    )
-    resp = conn.getresponse()
-    assert resp.status == 507
-    conn.close()
+    status = _post_raw_chunk(base, f"/api/recordings/{rec_c}/chunk", b"x", 4 * 1024 * 1024)
+    assert status == 507
 
 
 def test_chunk_after_admin_delete_does_not_resurrect(running_server):
@@ -449,21 +490,5 @@ def test_chunk_rejects_zero_length(running_server):
     base = running_server["base"]
     code, body = _post_json(f"{base}/api/recordings/init", {"room": "r"})
     rec_id = body["id"]
-
-    import http.client
-    from urllib.parse import urlparse as _urlparse
-
-    parts = _urlparse(base)
-    conn = http.client.HTTPConnection(parts.hostname, parts.port, timeout=10)
-    conn.request(
-        "POST",
-        f"/api/recordings/{rec_id}/chunk",
-        body=b"",
-        headers={
-            "Content-Type": "application/octet-stream",
-            "Content-Length": "0",
-        },
-    )
-    resp = conn.getresponse()
-    assert resp.status == 400
-    conn.close()
+    status = _post_raw_chunk(base, f"/api/recordings/{rec_id}/chunk", b"", 0)
+    assert status == 400

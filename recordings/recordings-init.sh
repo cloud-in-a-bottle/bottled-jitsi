@@ -26,9 +26,14 @@ chmod 700 "$REC_DIR"
 # path baked in. We do this from cont-init rather than ship a static
 # run script because $OPENHOST_APP_DATA_DIR isn't known at image
 # build time.
-HOST=""
-if [[ -f "$APP_DATA/hostname" ]]; then
-    HOST="$(cat "$APP_DATA/hostname")"
+# Resolve the public hostname. 00-openhost-config.sh exports
+# OPENHOST_PUBLIC_HOSTNAME via /var/run/s6/container_environment, so
+# `with-contenv bash` makes it available as a shell variable.  Fall
+# back to the cached file if the env var didn't propagate (e.g. on
+# very-first boot where the discovery dance is still in progress).
+HOST="${OPENHOST_PUBLIC_HOSTNAME:-}"
+if [[ -z "$HOST" && -r "$APP_DATA/hostname" ]]; then
+    HOST="$(cat "$APP_DATA/hostname" 2>/dev/null || true)"
 fi
 ORIGIN_HINT=""
 if [[ -n "$HOST" ]]; then

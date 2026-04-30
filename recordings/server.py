@@ -56,13 +56,12 @@ import secrets
 import shutil
 import sys
 import threading
-import time
 from datetime import datetime, timezone
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
-from urllib.parse import parse_qs, unquote, urlparse
+from urllib.parse import parse_qs, urlparse
 
 logger = logging.getLogger("openhost-jitsi-recordings")
 
@@ -194,8 +193,15 @@ def _evict_until_under_cap(rec_dir: Path, headroom_bytes: int, max_bytes: int) -
 
 
 def _sweep_orphans(rec_dir: Path) -> None:
-    """At startup: drop any *.tmp / *.json.tmp files and any metadata
-    whose recording file is missing."""
+    """At startup: drop *.tmp / *.json.tmp files (interrupted writes),
+    metadata for finalized recordings whose .webm is missing, and
+    metadata for unfinalized recordings whose .webm.tmp is also gone
+    (these can't ever be resumed and would otherwise stay visible
+    forever as 'uploading').
+
+    The .tmp sweep runs first, so the json sweep's existence check
+    catches the cases where we just deleted the corresponding .tmp.
+    """
     for pattern in ("*.webm.tmp", "*.json.tmp"):
         for p in rec_dir.glob(pattern):
             try:
@@ -210,12 +216,20 @@ def _sweep_orphans(rec_dir: Path) -> None:
         meta = _read_meta(rec_dir, rec_id)
         if meta is None:
             continue
-        if meta.get("finalized") and not _final_path(rec_dir, rec_id).exists():
-            try:
-                p.unlink()
-                logger.info("Removed metadata for missing recording %s", rec_id)
-            except OSError as e:
-                logger.warning("Could not remove orphan metadata %s: %s", p.name, e)
+        finalized = bool(meta.get("finalized"))
+        has_final = _final_path(rec_dir, rec_id).exists()
+        has_tmp = _tmp_path(rec_dir, rec_id).exists()
+        if finalized and not has_final:
+            stale_reason = "missing recording file"
+        elif not finalized and not has_tmp:
+            stale_reason = "no .webm.tmp; upload was interrupted and can't resume"
+        else:
+            continue
+        try:
+            p.unlink()
+            logger.info("Removed metadata for %s (%s)", rec_id, stale_reason)
+        except OSError as e:
+            logger.warning("Could not remove orphan metadata %s: %s", p.name, e)
 
 
 def _new_rec_id() -> str:
@@ -458,26 +472,26 @@ class _Handler(BaseHTTPRequestHandler):
             tmp = _tmp_path(self.state.rec_dir, rec_id)
             final = _final_path(self.state.rec_dir, rec_id)
             if meta.get("finalized"):
-                # Idempotent — but verify the file actually exists.
-                # If it doesn't, the recording is irrecoverably gone
-                # (admin delete, manual rm, etc.); surface 410 so the
-                # client doesn't think the upload still succeeded.
                 if final.exists():
                     return self._json(200, {"ok": True, "already_finalized": True})
                 return self._error(HTTPStatus.GONE, "recording deleted after finalize")
-            if not tmp.exists():
+            # Repair-on-retry: a previous finalize may have done the
+            # rename, then crashed before persisting `finalized=True`.
+            # Detect that and proceed to repair the metadata only.
+            if not tmp.exists() and final.exists():
+                logger.info("finalize-retry: tmp gone, final present for %s; repairing meta", rec_id)
+            elif not tmp.exists():
                 return self._error(HTTPStatus.GONE, "recording gone")
-            try:
-                os.replace(tmp, final)
-            except OSError as e:
-                logger.exception("rename failed for %s", rec_id)
-                return self._error(HTTPStatus.INTERNAL_SERVER_ERROR, f"rename failed: {e}")
-            # The bytes are committed; from here on we always mark
-            # the recording finalized even if the stat or metadata
-            # write trip — a follow-up retry would need a way to
-            # reach the data, so we don't want to leave it in a
-            # half-renamed state. Use the on-disk size if available;
-            # fall back to the size we tracked in metadata.
+            else:
+                try:
+                    os.replace(tmp, final)
+                except OSError as e:
+                    logger.exception("rename failed for %s", rec_id)
+                    return self._error(HTTPStatus.INTERNAL_SERVER_ERROR, f"rename failed: {e}")
+            # Bytes are committed (either we just renamed or a prior
+            # finalize did). Stamp meta. If the metadata write fails,
+            # the next retry hits the repair branch above and tries
+            # again.
             try:
                 size = final.stat().st_size
             except OSError as e:
@@ -522,6 +536,7 @@ class _Handler(BaseHTTPRequestHandler):
         return self._error(HTTPStatus.NOT_FOUND, "not found")
 
     def _handle_admin_delete(self, rec_id: str) -> None:
+        errors: list[str] = []
         with _state_lock:
             meta = _read_meta(self.state.rec_dir, rec_id)
             if meta is None:
@@ -535,6 +550,11 @@ class _Handler(BaseHTTPRequestHandler):
                     p.unlink(missing_ok=True)
                 except OSError as e:
                     logger.warning("delete %s: %s", p, e)
+                    errors.append(f"{p.name}: {e}")
+        if errors:
+            # Some files couldn't be removed; surface the failure so
+            # the admin UI doesn't show a misleading green tick.
+            return self._error(HTTPStatus.INTERNAL_SERVER_ERROR, "; ".join(errors))
         return self._json(200, {"ok": True})
 
     def _serve_recording(self, rec_id: str) -> None:

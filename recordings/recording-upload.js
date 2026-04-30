@@ -95,14 +95,32 @@
     }
 
     function getStartedBy() {
-        // Best-effort: Jitsi exposes the local participant's display
-        // name on APP.conference / APP.store. Fall back to 'anonymous'
-        // if we can't read it; the sidecar truncates and stores it.
+        // Best-effort: Jitsi exposes the local participant via
+        // window.APP.conference.getMyUserId() and the participants
+        // collection in redux. The participants entry shape varies
+        // between releases (Map, Set, plain object…), so we try a
+        // few paths.
         try {
+            // Path 1: APP.conference.getLocalDisplayName() — direct API
+            if (window.APP && window.APP.conference && typeof window.APP.conference.getLocalDisplayName === 'function') {
+                var name = window.APP.conference.getLocalDisplayName();
+                if (name) return String(name);
+            }
+            // Path 2: settings.displayName from redux (this is what
+            // the user types into the pre-meeting screen).
             var s = window.APP && window.APP.store && window.APP.store.getState && window.APP.store.getState();
             if (s) {
-                var local = s['features/base/participants'] && s['features/base/participants'].local;
-                if (local && local.name) return String(local.name);
+                var settings = s['features/base/settings'];
+                if (settings && settings.displayName) return String(settings.displayName);
+                // Path 3: scan participants for a `local: true` entry
+                // (handles both Map and plain-object redux shapes).
+                var participants = s['features/base/participants'];
+                if (participants) {
+                    var values = (typeof participants.values === 'function') ? participants.values() : Object.values(participants);
+                    for (var p of values) {
+                        if (p && p.local && p.name) return String(p.name);
+                    }
+                }
             }
         } catch (e) {
             log('getStartedBy error', e);
@@ -210,6 +228,9 @@
                 try {
                     try {
                         var r = await fetch(anchorHref);
+                        if (!r.ok) {
+                            throw new Error('blob URL fetch returned HTTP ' + r.status);
+                        }
                         blob = await r.blob();
                     } catch (e) {
                         log('failed to read blob; falling back to download', e);
@@ -235,6 +256,10 @@
                 }
             })().catch(function (e) {
                 log('unexpected error in upload pipeline', e);
+                showNotice(
+                    'Recording upload error: ' + safeText(e && e.message ? e.message : String(e)),
+                    { autoHideMs: 12000 }
+                );
             });
         } catch (e) {
             log('hook error; falling back to native click', e);
