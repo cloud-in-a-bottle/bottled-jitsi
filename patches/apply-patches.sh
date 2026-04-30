@@ -202,38 +202,23 @@ PY
 # env var forwarding works; we don't need to change that.
 
 # --------------------------------------------------------------- jibri
-# Jibri's 10-config (renamed to 16-jibri-config) writes its renderer
-# templates to /etc/jitsi/jibri/ (which is fine; it's a separate
-# location from /config), but creates a recordings dir at /config/
-# recordings and a logs dir at /config/logs that collide with our
-# per-service /config split. Move them under /config/jibri/.
+# Jibri's java JAR hard-codes /config/logs/ffmpeg.N.txt and
+# /config/recordings as the lock-file and output directories — the
+# cont-init template was configurable via JIBRI_RECORDING_DIR /
+# JIBRI_LOGS_DIR but the running JAR ignores those. We can't move
+# them; we let jibri have /config/logs and /config/recordings as-is
+# and accept the collision risk (none of the other services touch
+# those paths today).
 #
-# Also: the upstream image renames its config templates with a
-# 'jibri-' prefix in our build (jibri.conf -> jibri-... no wait,
-# we kept jibri.conf as-is but renamed xmpp.conf -> jibri-xmpp.conf
-# and logging.properties -> jibri-logging.properties to avoid
-# conflicts). Rewire the cont-init's tpl invocations to match.
-JIBRI_SED=(
-    -e 's#/config/recordings#/config/jibri/recordings#g'
-    -e 's#/config/logs#/config/jibri/logs#g'
-    -e 's#tpl /defaults/xmpp\.conf#tpl /defaults/jibri-xmpp.conf#g'
-    -e 's#tpl /defaults/logging\.properties#tpl /defaults/jibri-logging.properties#g'
-)
-sed -i "${JIBRI_SED[@]}" \
+# What we DO need to fix in 16-jibri-config:
+#   * the upstream image renames /defaults/xmpp.conf ->
+#     /defaults/jibri-xmpp.conf and /defaults/logging.properties ->
+#     /defaults/jibri-logging.properties in our build (to avoid
+#     colliding with jicofo / jvb), so retarget the tpl calls.
+sed -i \
+    -e 's#tpl /defaults/xmpp\.conf#tpl /defaults/jibri-xmpp.conf#g' \
+    -e 's#tpl /defaults/logging\.properties#tpl /defaults/jibri-logging.properties#g' \
     /etc/cont-init.d/16-jibri-config
-
-python3 - <<'PY'
-import pathlib
-p = pathlib.Path("/etc/cont-init.d/16-jibri-config")
-text = p.read_text()
-if "mkdir -p /config/jibri" not in text:
-    text = text.replace(
-        "#!/usr/bin/with-contenv bash",
-        "#!/usr/bin/with-contenv bash\nmkdir -p /config/jibri",
-        1,
-    )
-p.write_text(text)
-PY
 
 # Jibri's 10-config has a `capsh --has-p=cap_sys_admin` check that
 # exits non-zero if the cap isn't granted.  When ENABLE_RECORDING=0
