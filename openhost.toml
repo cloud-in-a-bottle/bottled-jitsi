@@ -1,11 +1,25 @@
 [app]
 name = "jitsi"
-version = "0.1.0"
-description = "Jitsi Meet video conferencing: XMPP + jicofo + jitsi-videobridge + nginx in one container."
+version = "0.2.0"
+description = "Jitsi Meet video conferencing: XMPP + jicofo + jitsi-videobridge + nginx + jibri (recording) in one container."
 
 [runtime.container]
 image = "Dockerfile"
 port = 80
+# Jibri runs a headless Chrome that captures the meeting; Chrome's
+# renderer needs >= 2 GiB of /dev/shm or it OOM-kills mid-recording.
+shm_mb = 2048
+# /dev/snd: ALSA loopback so jibri can pipe Chrome audio through
+# ffmpeg.  CAP_SYS_ADMIN: required by Chromium's headless sandbox
+# (creates user/PID/mount namespaces).  Both gated behind the
+# privileged opt-in below.
+devices = ["/dev/snd"]
+capabilities = ["SYS_ADMIN"]
+
+[runtime.security]
+# CAP_SYS_ADMIN gives this container effective root inside its
+# user namespace.  Operators must accept the warning at deploy time.
+privileged = true
 
 # Jitsi Videobridge media port. OpenHost only exposes extra ports in
 # the 9000-9999 range, so we pin JVB_PORT=9500 inside the container
@@ -17,18 +31,14 @@ container_port = 9500
 host_port = 9500
 
 [resources]
-# JVB + Jicofo are JVMs, Prosody is Lua, nginx is tiny. 3 GiB gives
-# everyone headroom for ~10 participants in a single room; bump this
-# if you expect more.
-memory_mb = 3072
-cpu_millicores = 2000
+# Adds ~2 GB for Jibri (Chrome + Xorg + ffmpeg) on top of the
+# baseline 3 GiB for JVB/Jicofo/Prosody/nginx.  Bump higher for
+# busier rooms or longer recordings.
+memory_mb = 5120
+cpu_millicores = 3000
 
 [data]
-# Persistent data: generated shared secrets + prosody's flat-file
-# account store (if ever enabled). ~/config/ in the container maps
-# here so the same secrets survive restarts.
 app_data = true
-# Per-boot scratch: nginx cache, prosody runtime logs, JVB temp files.
 app_temp_data = true
 
 [routing]

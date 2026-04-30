@@ -25,6 +25,7 @@ FROM jitsi/web:${JITSI_TAG} AS web-src
 FROM jitsi/prosody:${JITSI_TAG} AS prosody-src
 FROM jitsi/jicofo:${JITSI_TAG} AS jicofo-src
 FROM jitsi/jvb:${JITSI_TAG} AS jvb-src
+FROM jitsi/jibri:${JITSI_TAG} AS jibri-src
 
 # Final image inherits from jitsi/base-java which already has:
 #   * s6-overlay v1 at /init (stage-2 init: cont-init.d -> services.d)
@@ -64,9 +65,15 @@ RUN apt-dpkg-wrap apt-get update && \
         lua-cyrussasl lua-inspect lua-ldap lua-luaossl lua-sec lua-unbound \
         libldap-common sasl2-bin libsasl2-modules-ldap \
         jicofo \
-        jitsi-videobridge2 iproute2 libpcap0.8 && \
+        jitsi-videobridge2 iproute2 libpcap0.8 \
+        jibri \
+        libgl1-mesa-dri pulseaudio dbus dbus-x11 rtkit \
+        unzip fonts-noto fonts-noto-cjk libcap2-bin \
+        xserver-xorg-core xserver-xorg-video-dummy xserver-xorg-input-void \
+        x11-xserver-utils icewm procps && \
     apt-cleanup && \
-    rm -rf /var/lib/apt/lists/*
+    rm -rf /var/lib/apt/lists/* && \
+    adduser jibri rtkit
 
 # Pull jitsi-meet-prosody's plugin bundle without running the
 # package's postinst (which assumes an interactive debconf run and
@@ -129,6 +136,29 @@ COPY --from=jvb-src     /defaults/logging.properties      /defaults/jvb-logging.
 COPY --from=jvb-src     /etc/services.d/jvb/              /etc/services.d/jvb/
 COPY --from=jvb-src     /etc/cont-init.d/10-config        /etc/cont-init.d/12-jvb-config
 
+# jibri ---------------------------------------------------------------
+# Pull the headless Chrome binary, chromedriver, and shm-check probe
+# from the upstream jibri image rather than reinstalling them — saves
+# ~150MB of layer churn and pins us to the same Chrome version
+# upstream tested with stable-9955.
+COPY --from=jibri-src /opt/google                          /opt/google
+COPY --from=jibri-src /usr/bin/google-chrome               /usr/bin/google-chrome
+COPY --from=jibri-src /usr/bin/google-chrome-stable        /usr/bin/google-chrome-stable
+COPY --from=jibri-src /usr/local/bin/chromedriver          /usr/local/bin/chromedriver
+COPY --from=jibri-src /usr/bin/shm-check                   /usr/bin/shm-check
+# Defaults templates
+COPY --from=jibri-src /defaults/jibri.conf                 /defaults/jibri.conf
+COPY --from=jibri-src /defaults/xmpp.conf                  /defaults/jibri-xmpp.conf
+COPY --from=jibri-src /defaults/logging.properties         /defaults/jibri-logging.properties
+COPY --from=jibri-src /defaults/xorg-video-dummy.conf      /defaults/xorg-video-dummy.conf
+# Services + cont-init
+COPY --from=jibri-src /etc/services.d/10-xorg/             /etc/services.d/15-jibri-xorg/
+COPY --from=jibri-src /etc/services.d/30-pulse/            /etc/services.d/16-jibri-pulse/
+COPY --from=jibri-src /etc/services.d/40-jibri/            /etc/services.d/17-jibri/
+COPY --from=jibri-src /etc/cont-init.d/10-config           /etc/cont-init.d/16-jibri-config
+# jibri also wants a small dotfile in $HOME for ALSA loopback
+COPY --from=jibri-src /home/jibri/                         /home/jibri/
+
 # web -----------------------------------------------------------------
 COPY --from=web-src     /defaults/default                 /defaults/nginx-default.conf
 COPY --from=web-src     /defaults/nginx.conf              /defaults/nginx.conf
@@ -174,8 +204,9 @@ COPY recordings/server.py /opt/openhost-recordings/server.py
 COPY recordings/recordings-init.sh /etc/cont-init.d/14-recordings-init
 COPY recordings/recording-upload.js /usr/share/jitsi-meet/static/openhost-recordings.js
 COPY recordings/body.html /usr/share/jitsi-meet/body.html
+COPY recordings/jibri-finalize.sh /opt/openhost-recordings/jibri-finalize.sh
 
-RUN chmod +x /etc/cont-init.d/* /opt/openhost-jitsi/*.sh 2>/dev/null || true
+RUN chmod +x /etc/cont-init.d/* /opt/openhost-jitsi/*.sh /opt/openhost-recordings/jibri-finalize.sh /etc/services.d/15-jibri-xorg/run /etc/services.d/16-jibri-pulse/run /etc/services.d/17-jibri/run 2>/dev/null || true
 
 # ---------------------------------------------------------------- runtime
 EXPOSE 80
@@ -199,7 +230,20 @@ ENV DISABLE_HTTPS=1 \
     ENABLE_COLIBRI_WEBSOCKET=0 \
     ENABLE_XMPP_WEBSOCKET=0 \
     DISABLE_POLLS=1 \
-    TZ=UTC
+    TZ=UTC \
+    ENABLE_RECORDING=1 \
+    DISPLAY=:0 \
+    JIBRI_RECORDER_USER=recorder \
+    JIBRI_XMPP_USER=jibri \
+    XMPP_RECORDER_DOMAIN=recorder.meet.jitsi \
+    XMPP_HIDDEN_DOMAIN=recorder.meet.jitsi \
+    JIBRI_BREWERY_MUC=jibribrewery \
+    XMPP_INTERNAL_MUC_DOMAIN=internal-muc.meet.jitsi \
+    XMPP_DOMAIN=meet.jitsi \
+    XMPP_AUTH_DOMAIN=auth.meet.jitsi \
+    XMPP_MUC_DOMAIN=muc.meet.jitsi \
+    XMPP_GUEST_DOMAIN=guest.meet.jitsi \
+    JIBRI_FINALIZE_RECORDING_SCRIPT_PATH=/opt/openhost-recordings/jibri-finalize.sh
 
 VOLUME ["/config"]
 

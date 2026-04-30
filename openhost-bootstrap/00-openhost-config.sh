@@ -84,6 +84,14 @@ JICOFO_AUTH_PASSWORD_VAL="$(persist_password JICOFO_AUTH_PASSWORD)"
 JICOFO_COMPONENT_SECRET_VAL="$(persist_password JICOFO_COMPONENT_SECRET)"
 JVB_AUTH_PASSWORD_VAL="$(persist_password JVB_AUTH_PASSWORD)"
 
+# Jibri secrets — only generated when recording is enabled.  They
+# never leave the container; prosody, jicofo, and jibri all read
+# them out of /var/run/s6/container_environment via with-contenv.
+if [[ "${ENABLE_RECORDING:-}" == "1" ]]; then
+    JIBRI_XMPP_PASSWORD_VAL="$(persist_password JIBRI_XMPP_PASSWORD)"
+    JIBRI_RECORDER_PASSWORD_VAL="$(persist_password JIBRI_RECORDER_PASSWORD)"
+fi
+
 # -------------------------------------------------------------- JVB addr
 #
 # JVB needs to advertise a public IP in its SDP ICE candidates so
@@ -128,6 +136,8 @@ printf '%s' "$HOSTNAME_VAL"               > "$CENV/OPENHOST_PUBLIC_HOSTNAME"
 printf '%s' "$JICOFO_AUTH_PASSWORD_VAL"   > "$CENV/JICOFO_AUTH_PASSWORD"
 printf '%s' "$JICOFO_COMPONENT_SECRET_VAL" > "$CENV/JICOFO_COMPONENT_SECRET"
 printf '%s' "$JVB_AUTH_PASSWORD_VAL"      > "$CENV/JVB_AUTH_PASSWORD"
+[[ -n "${JIBRI_XMPP_PASSWORD_VAL:-}" ]] && printf '%s' "$JIBRI_XMPP_PASSWORD_VAL" > "$CENV/JIBRI_XMPP_PASSWORD"
+[[ -n "${JIBRI_RECORDER_PASSWORD_VAL:-}" ]] && printf '%s' "$JIBRI_RECORDER_PASSWORD_VAL" > "$CENV/JIBRI_RECORDER_PASSWORD"
 [[ -n "$JVB_ADVERTISE_IPS_VAL" ]] && printf '%s' "$JVB_ADVERTISE_IPS_VAL" > "$CENV/JVB_ADVERTISE_IPS"
 # JVB_PORT defaults to 10000 in the upstream templates; we pin 9500
 # to match the [[ports]] entry in openhost.toml (OpenHost only allows

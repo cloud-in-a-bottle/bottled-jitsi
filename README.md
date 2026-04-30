@@ -108,21 +108,19 @@ by JVB), not CPU. Bump memory if you expect larger rooms.
 
 ## Recording
 
-Browser-side local recording with server-side persistence is built
-in. Click the toolbar's overflow menu → **Start recording** → **Me**
-or **All participants**, then **Stop recording** when done. The
-resulting WebM is uploaded to a small Python sidecar inside the
-container and stored under `$OPENHOST_APP_DATA_DIR/recordings/`.
+Server-side recording via **Jibri** (Jitsi Broadcasting
+Infrastructure) bundled into the same container. Click the
+toolbar's overflow menu → **Start recording** → **Record this call**
+in any meeting. A headless Chrome inside the container joins the
+call as an invisible participant, captures audio + video via Xorg's
+dummy driver and ALSA loopback, and ffmpeg-encodes to MP4. When you
+stop recording the file is uploaded to the recordings sidecar and
+deleted from Jibri's working directory.
 
-This is **not** Jibri. The recorder's browser captures and encodes
-the meeting (so quality depends on their CPU and network); the
-server only stores the bytes. Practical implications:
-
-- The recorder must keep their tab open until the upload finishes.
-  A 1-hour 720p recording is ~500 MB-1 GB, so the upload itself
-  can take a few minutes on a typical residential connection.
-- If the recorder closes the tab mid-meeting, the recording is lost.
-- Live streaming (RTMP) is not supported.
+The browser-side fallback (where the recorder's own browser
+captures the call and uploads the bytes) is also still in place; if
+Jibri is unavailable for some reason the meeting overflow menu's
+local-recording option will work as a backup.
 
 To access recordings, the host needs the **admin URL** that the
 container writes to its logs on startup:
@@ -139,13 +137,37 @@ Disk usage is capped at 5 GiB by default, with oldest-first
 eviction. Tmp uploads-in-progress count against the cap too, so a
 flood of unfinalized uploads can't bypass it.
 
+## Privileged-app requirement
+
+Jibri's recording pipeline requires a few host-level capabilities
+OpenHost normally denies to apps. The manifest opts in:
+
+```toml
+[runtime.security]
+privileged = true   # CAP_SYS_ADMIN for Chromium's headless sandbox
+
+[runtime.container]
+shm_mb = 2048           # Chrome renderer wants >= 2 GiB /dev/shm
+devices = ["/dev/snd"]  # ALSA loopback for audio capture
+capabilities = ["SYS_ADMIN"]
+```
+
+When you deploy this app the dashboard shows a red warning row
+("This app gets host-equivalent privilege..."). Acknowledge it
+explicitly. The platform also requires the `snd-aloop` kernel
+module to be loaded on the host; the OpenHost ansible setup does
+this via `/etc/modules-load.d/openhost-snd-aloop.conf`.
+
+If you'd rather not grant these privileges, you can drop the
+`[runtime.security]` block + the SYS_ADMIN cap + shm_mb. Jibri
+won't start (the cont-init bails on the cap check) but the
+browser-side fallback still works for casual recording.
+
 ## What's not included
 
-- **Jibri** (server-side recording, live-streaming) — requires host
-  kernel ALSA loopback and a headless Chrome per recording; not
-  feasible in OpenHost's one-container-per-app model. The
-  browser-side flow above is the alternative.
-- **Jigasi** (SIP dial-in) — skipped for v1.
+- **Live streaming** (Jibri RTMP push to YouTube / etc.) — would
+  work in principle but isn't wired up.
+- **Jigasi** (SIP dial-in) — skipped.
 - **External coturn** — if your users are behind restrictive
   firewalls that block outgoing UDP to non-443 ports, they will
   fail to get media through. Deploy a coturn separately and wire it

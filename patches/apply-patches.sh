@@ -201,4 +201,55 @@ PY
 # upstream jvb run uses /bin/bash but with `with-contenv bash` the
 # env var forwarding works; we don't need to change that.
 
+# --------------------------------------------------------------- jibri
+# Jibri's 10-config (renamed to 16-jibri-config) writes its renderer
+# templates to /etc/jitsi/jibri/ (which is fine; it's a separate
+# location from /config), but creates a recordings dir at /config/
+# recordings and a logs dir at /config/logs that collide with our
+# per-service /config split. Move them under /config/jibri/.
+#
+# Also: the upstream image renames its config templates with a
+# 'jibri-' prefix in our build (jibri.conf -> jibri-... no wait,
+# we kept jibri.conf as-is but renamed xmpp.conf -> jibri-xmpp.conf
+# and logging.properties -> jibri-logging.properties to avoid
+# conflicts). Rewire the cont-init's tpl invocations to match.
+JIBRI_SED=(
+    -e 's#/config/recordings#/config/jibri/recordings#g'
+    -e 's#/config/logs#/config/jibri/logs#g'
+    -e 's#tpl /defaults/xmpp\.conf#tpl /defaults/jibri-xmpp.conf#g'
+    -e 's#tpl /defaults/logging\.properties#tpl /defaults/jibri-logging.properties#g'
+)
+sed -i "${JIBRI_SED[@]}" \
+    /etc/cont-init.d/16-jibri-config
+
+python3 - <<'PY'
+import pathlib
+p = pathlib.Path("/etc/cont-init.d/16-jibri-config")
+text = p.read_text()
+if "mkdir -p /config/jibri" not in text:
+    text = text.replace(
+        "#!/usr/bin/with-contenv bash",
+        "#!/usr/bin/with-contenv bash\nmkdir -p /config/jibri",
+        1,
+    )
+p.write_text(text)
+PY
+
+# Jibri's 10-config has a `capsh --has-p=cap_sys_admin` check that
+# exits non-zero if the cap isn't granted.  When ENABLE_RECORDING=0
+# we'd want to skip jibri's services entirely.  Easier: keep the
+# check (it correctly fails-fast if the operator forgot to declare
+# privileged=true in their manifest) and have the s6 service runs
+# do nothing when ENABLE_RECORDING != 1.
+for svc in 15-jibri-xorg 16-jibri-pulse 17-jibri; do
+    sed -i '2a if [[ "${ENABLE_RECORDING:-1}" != "1" ]]; then s6-svc -O /var/run/s6/services/'"$svc"'; exit 0; fi' \
+        /etc/services.d/$svc/run
+done
+
+# Tell prosody about the recorder hidden domain.  The upstream
+# template gates the relevant blocks on $ENABLE_RECORDING which
+# we set in the Dockerfile ENV; the prosody config patches we run
+# above already rewrote /config/conf.d paths into
+# /config/prosody/conf.d so this works without further changes.
+
 echo "[patches] applied successfully"
