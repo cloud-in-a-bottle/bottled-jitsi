@@ -66,7 +66,8 @@ from urllib.parse import parse_qs, urlparse
 logger = logging.getLogger("openhost-jitsi-recordings")
 
 
-# Default cap; override with $RECORDINGS_MAX_BYTES.
+# Default cap; override with --max-bytes (set via the run-script
+# render in recordings-init.sh; no env var path).
 DEFAULT_MAX_BYTES = 5 * 1024 * 1024 * 1024  # 5 GiB
 DEFAULT_CHUNK_SIZE = 5 * 1024 * 1024  # 5 MiB
 
@@ -87,6 +88,27 @@ ROOM_RE = re.compile(r"^[A-Za-z0-9._\- ]{1,128}$")
 # inside this lock is local-disk-only and bounded; we don't hold it
 # across the multi-megabyte chunk reads themselves.
 _state_lock = threading.RLock()
+
+# Per-recording locks serialize chunk writes for a single recording
+# so concurrent POSTs for the same rec_id can't interleave bytes in
+# the .webm.tmp file. The ``_state_lock`` guards mutations of this
+# dict itself; the lock objects within it are then taken outside the
+# global state lock so multiple recordings can stream concurrently.
+_chunk_locks: dict[str, threading.Lock] = {}
+
+
+def _chunk_lock_for(rec_id: str) -> threading.Lock:
+    with _state_lock:
+        lock = _chunk_locks.get(rec_id)
+        if lock is None:
+            lock = threading.Lock()
+            _chunk_locks[rec_id] = lock
+        return lock
+
+
+def _drop_chunk_lock(rec_id: str) -> None:
+    with _state_lock:
+        _chunk_locks.pop(rec_id, None)
 
 
 def _now_iso() -> str:
@@ -237,13 +259,17 @@ def _new_rec_id() -> str:
 
 
 def _load_or_create_admin_token(token_path: Path) -> str:
-    if token_path.exists():
-        token = token_path.read_text().strip()
-        if token:
-            return token
-    token = secrets.token_urlsafe(24)
-    token_path.parent.mkdir(parents=True, exist_ok=True)
-    token_path.write_text(token)
+    try:
+        if token_path.exists():
+            token = token_path.read_text().strip()
+            if token:
+                return token
+        token = secrets.token_urlsafe(24)
+        token_path.parent.mkdir(parents=True, exist_ok=True)
+        token_path.write_text(token)
+    except OSError as e:
+        logger.exception("FATAL: cannot read or create admin token file %s", token_path)
+        raise RuntimeError(f"admin token IO failed: {e}") from e
     try:
         token_path.chmod(0o600)
     except OSError as e:
@@ -417,6 +443,14 @@ class _Handler(BaseHTTPRequestHandler):
             # ACT on the eviction yet — that happens only after we've
             # actually received bytes — but if there's no possible way
             # for the chunk to land, the client deserves an early 507.
+            #
+            # NOTE: this is an over-approximation. ``_disk_usage`` counts
+            # every file in the recordings dir (json, tmp, webm),
+            # while ``size_bytes`` only tracks .webm size; a finalized
+            # recording's metadata file (~150 bytes) effectively
+            # raises the floor by that much. The miscounting only
+            # over-rejects, never under-rejects, so it's a soft
+            # tightening of the cap rather than a leak.
             current_usage = _disk_usage(self.state.rec_dir)
             evictable = sum(
                 int(m.get("size_bytes", 0))
@@ -429,7 +463,16 @@ class _Handler(BaseHTTPRequestHandler):
                     "disk quota exceeded; even evicting all finalized recordings wouldn't fit",
                 )
 
-        # Stream the body to disk in fixed-size reads outside the lock.
+        # Take the per-recording lock so two POSTs for the same
+        # rec_id don't interleave bytes in the tmp file. We hold it
+        # across the streaming + metadata-update pair; concurrent
+        # chunks for DIFFERENT recordings still proceed in parallel.
+        rec_lock = _chunk_lock_for(rec_id)
+        with rec_lock:
+            return self._stream_chunk_locked(rec_id, length, tmp)
+
+    def _stream_chunk_locked(self, rec_id: str, length: int, tmp: Path) -> None:
+        # Stream the body to disk in fixed-size reads outside the global lock.
         # Only AFTER we have actual bytes do we trigger eviction —
         # otherwise an attacker could claim a large Content-Length,
         # disconnect, and force eviction of every finalized recording
@@ -438,16 +481,26 @@ class _Handler(BaseHTTPRequestHandler):
         # If the write fails partway, truncate back to the pre-chunk
         # size so that a client retry doesn't append duplicate bytes
         # on top of a partial write (would corrupt the WebM).
-        pre_chunk_size = tmp.stat().st_size if tmp.exists() else 0
+        try:
+            pre_chunk_size = tmp.stat().st_size
+        except OSError:
+            # Concurrent admin DELETE removed tmp between the lock
+            # release and here; the upload is dead.
+            return self._error(HTTPStatus.GONE, "recording was deleted before chunk could be written")
         try:
             written = self._stream_to_file(tmp, length)
         except OSError as e:
             logger.exception("write failed for %s; rolling back tmp to %d bytes", rec_id, pre_chunk_size)
+            # Open in r+b (not ab) so a concurrent admin DELETE that
+            # removed the tmp file produces FileNotFoundError instead
+            # of recreating an empty file.
             try:
-                with tmp.open("ab") as fh:
+                with tmp.open("r+b") as fh:
                     fh.truncate(pre_chunk_size)
-            except OSError:
-                logger.exception("rollback truncate failed for %s; tmp may be corrupted", rec_id)
+            except FileNotFoundError:
+                logger.info("rollback skipped: tmp for %s was deleted concurrently", rec_id)
+            except OSError as e2:
+                logger.warning("rollback truncate failed for %s: %s; tmp may be corrupted", rec_id, e2)
             return self._error(HTTPStatus.INTERNAL_SERVER_ERROR, f"write failed: {e}")
 
         with _state_lock:
@@ -516,6 +569,8 @@ class _Handler(BaseHTTPRequestHandler):
                 logger.exception("metadata write failed in finalize for %s", rec_id)
                 return self._error(HTTPStatus.INTERNAL_SERVER_ERROR, f"metadata write failed: {e}")
         logger.info("finalized recording %s (%d bytes)", rec_id, meta["size_bytes"])
+        # No more chunks will arrive for this recording; drop its lock.
+        _drop_chunk_lock(rec_id)
         return self._json(200, {"ok": True})
 
     def _stream_to_file(self, path: Path, length: int) -> int:
@@ -548,6 +603,10 @@ class _Handler(BaseHTTPRequestHandler):
 
     def _handle_admin_delete(self, rec_id: str) -> None:
         errors: list[str] = []
+        # Drop any per-recording chunk lock so a future re-init with
+        # the same id (extremely unlikely; ids are 64-bit random) or
+        # a stuck thread doesn't keep a dead reference around.
+        _drop_chunk_lock(rec_id)
         with _state_lock:
             meta = _read_meta(self.state.rec_dir, rec_id)
             if meta is None:

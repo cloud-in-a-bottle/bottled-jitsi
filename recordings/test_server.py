@@ -378,6 +378,49 @@ def test_health_endpoint(running_server):
     assert json.loads(body)["ok"] is True
 
 
+def test_concurrent_chunks_for_same_id_serialize(running_server):
+    """Two concurrent chunk POSTs for the same recording id must
+    serialize so their bytes end up contiguous, not interleaved."""
+    base = running_server["base"]
+    rec_dir = running_server["rec_dir"]
+    code, body = _post_json(f"{base}/api/recordings/init", {"room": "concurrent"})
+    rec_id = body["id"]
+
+    # Two threads, each writing a distinguishable 256 KiB chunk.
+    a = b"A" * 262144
+    b_ = b"B" * 262144
+
+    results = []
+
+    def upload(payload):
+        code, _ = _post_bytes(f"{base}/api/recordings/{rec_id}/chunk", payload)
+        results.append(code)
+
+    t1 = threading.Thread(target=upload, args=(a,))
+    t2 = threading.Thread(target=upload, args=(b_,))
+    t1.start()
+    t2.start()
+    t1.join()
+    t2.join()
+    assert results == [200, 200]
+
+    # File on disk must be one of the two contiguous orderings,
+    # not an interleave. 'A' bytes must come before 'B' bytes
+    # (or all 'B' before all 'A') — not mixed.
+    contents = (rec_dir / f"{rec_id}.webm.tmp").read_bytes()
+    assert len(contents) == len(a) + len(b_)
+    boundary_a = contents.find(b"B")
+    boundary_b = contents.find(b"A")
+    # Whichever wrote first, after the boundary every byte should
+    # be the other character.
+    if contents.startswith(b"A"):
+        assert contents[: len(a)] == a
+        assert contents[len(a) :] == b_
+    else:
+        assert contents[: len(b_)] == b_
+        assert contents[len(b_) :] == a
+
+
 def test_listing_shows_uploading_state_for_unfinalized(running_server):
     """An in-progress (unfinalized) recording must appear in the
     listing as 'uploading' without action links."""
