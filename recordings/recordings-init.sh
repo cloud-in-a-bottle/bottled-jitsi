@@ -60,7 +60,9 @@ cat > /config/web/nginx-custom/openhost-recordings.conf <<'EOF'
 
 # Anonymous upload endpoints. POST-only at the application level;
 # nginx allows any method through and the sidecar 404s the rest.
-location ~ ^/api/recordings/(init|[a-f0-9]{16}/(chunk|finalize)|health)$ {
+# Use a broad prefix match — the sidecar enforces the exact route
+# regex internally, so over-routing here is harmless.
+location ^~ /api/recordings/ {
     proxy_pass http://127.0.0.1:5060;
     proxy_http_version 1.1;
     proxy_set_header Host $host;
