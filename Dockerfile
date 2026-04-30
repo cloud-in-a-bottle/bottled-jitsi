@@ -222,7 +222,7 @@ COPY recordings/recording-upload.js /usr/share/jitsi-meet/static/openhost-record
 COPY recordings/body.html /usr/share/jitsi-meet/body.html
 COPY recordings/jibri-finalize.sh /opt/openhost-recordings/jibri-finalize.sh
 
-RUN chmod +x /etc/cont-init.d/* /opt/openhost-jitsi/*.sh /opt/openhost-recordings/jibri-finalize.sh /etc/services.d/15-jibri-xorg/run /etc/services.d/16-jibri-pulse/run /etc/services.d/17-jibri/run 2>/dev/null || true
+RUN chmod +x /etc/cont-init.d/* /opt/openhost-jitsi/*.sh /opt/openhost-recordings/jibri-finalize.sh /etc/services.d/*/run 2>/dev/null || true
 
 # ---------------------------------------------------------------- runtime
 EXPOSE 80
@@ -248,6 +248,7 @@ ENV DISABLE_HTTPS=1 \
     DISABLE_POLLS=1 \
     TZ=UTC \
     ENABLE_RECORDING=1 \
+    MAX_PARALLEL_RECORDINGS=1 \
     DISPLAY=:0 \
     JIBRI_RECORDER_USER=recorder \
     JIBRI_XMPP_USER=jibri \

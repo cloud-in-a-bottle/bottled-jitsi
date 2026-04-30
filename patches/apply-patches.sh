@@ -202,34 +202,222 @@ PY
 # env var forwarding works; we don't need to change that.
 
 # --------------------------------------------------------------- jibri
-# Jibri's java JAR hard-codes /config/logs/ffmpeg.N.txt and
-# /config/recordings as the lock-file and output directories — the
-# cont-init template was configurable via JIBRI_RECORDING_DIR /
-# JIBRI_LOGS_DIR but the running JAR ignores those. We can't move
-# them; we let jibri have /config/logs and /config/recordings as-is
-# and accept the collision risk (none of the other services touch
-# those paths today).
 #
-# What we DO need to fix in 16-jibri-config:
-#   * the upstream image renames /defaults/xmpp.conf ->
-#     /defaults/jibri-xmpp.conf and /defaults/logging.properties ->
-#     /defaults/jibri-logging.properties in our build (to avoid
-#     colliding with jicofo / jvb), so retarget the tpl calls.
-sed -i \
-    -e 's#tpl /defaults/xmpp\.conf#tpl /defaults/jibri-xmpp.conf#g' \
-    -e 's#tpl /defaults/logging\.properties#tpl /defaults/jibri-logging.properties#g' \
-    /etc/cont-init.d/16-jibri-config
+# We support up to MAX_JIBRI_INSTANCES (=6) parallel Jibri instances
+# inside this single container, sharing one prosody / jicofo /
+# jvb. Each Jibri needs its own:
+#
+#   * Xorg display ($DISPLAY=:N, listening on TCP port 6000+N)
+#   * PulseAudio runtime dir ($PULSE_RUNTIME_PATH=/run/pulse-N)
+#   * JIBRI_INSTANCE_ID (the brewery-MUC nickname; must be unique
+#     per jibri at the prosody level or the second login is rejected)
+#   * jibri.conf, xmpp.conf, logging.properties (rendered into
+#     /etc/jitsi/jibri/{jibri,xmpp}-N.conf and logging-N.properties
+#     since each references JIBRI_INSTANCE_ID and points at
+#     per-instance log dirs)
+#   * /config/logs-N (java FileHandler log path; sharing across
+#     processes is technically supported via lock files but produces
+#     interleaved logs that are very hard to debug — give each
+#     instance its own dir)
+#
+# The recordings directory (/config/recordings/<session-id>) is
+# shared across instances; jicofo mints unique session IDs so there's
+# no collision risk.
+#
+# At runtime, the operator picks how many instances to actually use
+# via MAX_PARALLEL_RECORDINGS in [1, MAX_JIBRI_INSTANCES] (default
+# 1).  Each instance's run script self-disables via 's6-svc -O' if
+# its index >= MAX_PARALLEL_RECORDINGS, so we always bake all 6
+# service definitions into the image but only spend resources on
+# the configured count.
+#
+# We ALSO disable all instances entirely when ENABLE_RECORDING != 1,
+# preserving the prior behavior where recording can be turned off
+# for users who don't want the privileged-app opt-in.
+MAX_JIBRI_INSTANCES=6
 
-# Jibri's 10-config has a `capsh --has-p=cap_sys_admin` check that
-# exits non-zero if the cap isn't granted.  When ENABLE_RECORDING=0
-# we'd want to skip jibri's services entirely.  Easier: keep the
-# check (it correctly fails-fast if the operator forgot to declare
-# privileged=true in their manifest) and have the s6 service runs
-# do nothing when ENABLE_RECORDING != 1.
-for svc in 15-jibri-xorg 16-jibri-pulse 17-jibri; do
-    sed -i '2a if [[ "${ENABLE_RECORDING:-1}" != "1" ]]; then s6-svc -O /var/run/s6/services/'"$svc"'; exit 0; fi' \
-        /etc/services.d/$svc/run
+# Retarget the cont-init script to render per-instance config files.
+# The upstream cont-init renders one set of config files; we replace
+# its tpl calls with a loop that renders N sets. Other than the tpl
+# calls, the cont-init's environment validation, capability check,
+# and instance-id defaulting are still useful, so we keep them and
+# only rewrite the rendering block.
+python3 - <<'PY'
+import pathlib
+import re
+p = pathlib.Path("/etc/cont-init.d/16-jibri-config")
+text = p.read_text()
+
+# Replace the four tpl calls with our looped renderer. The marker
+# we look for is the upstream "always recreate configs" comment
+# block; everything from there to the next blank line is replaced.
+old = (
+    "# always recreate configs\n"
+    "tpl /defaults/jibri.conf > /etc/jitsi/jibri/jibri.conf\n"
+    "tpl /defaults/xmpp.conf > /etc/jitsi/jibri/xmpp.conf\n"
+    "tpl /defaults/logging.properties > /etc/jitsi/jibri/logging.properties\n"
+    "tpl /defaults/xorg-video-dummy.conf > /etc/jitsi/jibri/xorg-video-dummy.conf\n"
+)
+new = (
+    "# Render per-instance configs. Each instance has its own\n"
+    "# jibri-N.conf (with a unique JIBRI_INSTANCE_ID), xmpp-N.conf\n"
+    "# (which inherits the same instance-id via env), and\n"
+    "# logging-N.properties (writes to /config/logs-N/). The\n"
+    "# xorg-video-dummy.conf has no per-instance state.\n"
+    "tpl /defaults/xorg-video-dummy.conf > /etc/jitsi/jibri/xorg-video-dummy.conf\n"
+    "for i in $(seq 0 $(( ${MAX_JIBRI_INSTANCES:-6} - 1 ))); do\n"
+    "    export JIBRI_INSTANCE_ID=\"${OPENHOST_JIBRI_INSTANCE_ID_PREFIX:-jibri}-${i}\"\n"
+    "    export JIBRI_LOGS_DIR=\"/config/logs-${i}\"\n"
+    "    mkdir -p \"$JIBRI_LOGS_DIR\"\n"
+    "    chown -R jibri \"$JIBRI_LOGS_DIR\"\n"
+    "    # The logging.properties references /config/logs/* literally;\n"
+    "    # rewrite to /config/logs-N/* on the fly via tpl + sed.\n"
+    "    tpl /defaults/jibri-logging.properties \\\n"
+    "        | sed \"s#/config/logs/#/config/logs-${i}/#g\" \\\n"
+    "        > \"/etc/jitsi/jibri/logging-${i}.properties\"\n"
+    "    tpl /defaults/jibri.conf > \"/etc/jitsi/jibri/jibri-${i}.conf\"\n"
+    "    tpl /defaults/jibri-xmpp.conf > \"/etc/jitsi/jibri/xmpp-${i}.conf\"\n"
+    "    # jibri.conf has 'include \"xmpp.conf\"' (relative to its own\n"
+    "    # location); rewrite to point at the per-instance file.\n"
+    "    sed -i \"s#include \\\"xmpp.conf\\\"#include \\\"xmpp-${i}.conf\\\"#g\" \\\n"
+    "        \"/etc/jitsi/jibri/jibri-${i}.conf\"\n"
+    "done\n"
+)
+assert old in text, "could not find tpl block in 16-jibri-config to replace"
+text = text.replace(old, new, 1)
+
+# The upstream cont-init also runs `mkdir -p /config/logs` and chowns
+# it; that's still useful as a no-op fallback (log path for any\n
+# instance whose logging.properties wasn't rewritten correctly).
+p.write_text(text)
+PY
+
+# Stamp the MAX_JIBRI_INSTANCES build-time constant into a place the
+# cont-init and the per-instance run scripts can read it from. We
+# write it as a /var/run/s6/container_environment file at boot via
+# 00-openhost-config.sh, but services.d/run scripts execute BEFORE
+# container_environment is fully populated for subsequent services,
+# so the safest thing is also to bake the same value into a
+# build-time file that everyone reads.
+echo "$MAX_JIBRI_INSTANCES" > /etc/openhost-jibri-max-instances
+
+# Per-instance Xorg / Pulse / Jibri service definitions. We start
+# from the existing 15-jibri-xorg, 16-jibri-pulse, 17-jibri trees
+# (each is a one-file directory with a `run` script) and clone them
+# 6 times.
+for instance_kind in xorg pulse jibri; do
+    case $instance_kind in
+        xorg)  src=15-jibri-xorg  ;;
+        pulse) src=16-jibri-pulse ;;
+        jibri) src=17-jibri        ;;
+    esac
+    for i in $(seq 0 $(( MAX_JIBRI_INSTANCES - 1 ))); do
+        dst="${src}-${i}"
+        cp -r "/etc/services.d/$src" "/etc/services.d/$dst"
+    done
+    rm -rf "/etc/services.d/$src"
 done
+
+# Now write the run scripts. Each is a single template that derives
+# its instance index from $S6_SERVICE_DIR and exports the right env
+# before exec'ing the daemon.
+
+cat > /tmp/_xorg_run <<'RUN'
+#!/usr/bin/with-contenv bash
+# Derive instance index from this script's own directory name
+# (15-jibri-xorg-N). $0 is the absolute path to this run script.
+SVC_DIR="$(dirname "$(readlink -f "$0")")"
+INSTANCE_INDEX="${SVC_DIR##*-}"
+
+if [[ "${ENABLE_RECORDING:-1}" != "1" ]]; then
+    exec s6-svc -O "$SVC_DIR"
+fi
+if (( INSTANCE_INDEX >= ${MAX_PARALLEL_RECORDINGS:-1} )); then
+    exec s6-svc -O "$SVC_DIR"
+fi
+
+DISPLAY=":${INSTANCE_INDEX}"
+DAEMON="/usr/bin/Xorg -nocursor -noreset +extension RANDR +extension RENDER \
+    -logfile /tmp/xorg-${INSTANCE_INDEX}.log \
+    -config /etc/jitsi/jibri/xorg-video-dummy.conf ${DISPLAY}"
+exec s6-setuidgid jibri /bin/bash -c "exec $DAEMON"
+RUN
+
+cat > /tmp/_pulse_run <<'RUN'
+#!/usr/bin/with-contenv bash
+SVC_DIR="$(dirname "$(readlink -f "$0")")"
+INSTANCE_INDEX="${SVC_DIR##*-}"
+
+if [[ "${ENABLE_RECORDING:-1}" != "1" ]]; then
+    exec s6-svc -O "$SVC_DIR"
+fi
+if (( INSTANCE_INDEX >= ${MAX_PARALLEL_RECORDINGS:-1} )); then
+    exec s6-svc -O "$SVC_DIR"
+fi
+
+# Each pulse instance gets its own runtime dir so the unix sockets
+# don't collide. We also override the log path so we can tell whose
+# log is whose.  The rest of the pulse config (~/.config/pulse/)
+# is shared and instance-agnostic.
+HOME=/home/jibri
+PULSE_RUNTIME_PATH="/run/pulse-${INSTANCE_INDEX}"
+mkdir -p "$PULSE_RUNTIME_PATH"
+chown jibri:jibri "$PULSE_RUNTIME_PATH"
+export PULSE_RUNTIME_PATH HOME
+
+# The default daemon.conf logs to /config/logs/pulse.log; rewrite
+# at startup to a per-instance path via --log-target.
+exec s6-setuidgid jibri /bin/bash -c \
+    "PULSE_RUNTIME_PATH='$PULSE_RUNTIME_PATH' exec /usr/bin/pulseaudio \
+        --log-target=file:/config/logs-${INSTANCE_INDEX}/pulse.log"
+RUN
+
+cat > /tmp/_jibri_run <<'RUN'
+#!/usr/bin/with-contenv bash
+SVC_DIR="$(dirname "$(readlink -f "$0")")"
+INSTANCE_INDEX="${SVC_DIR##*-}"
+
+if [[ "${ENABLE_RECORDING:-1}" != "1" ]]; then
+    exec s6-svc -O "$SVC_DIR"
+fi
+if (( INSTANCE_INDEX >= ${MAX_PARALLEL_RECORDINGS:-1} )); then
+    exec s6-svc -O "$SVC_DIR"
+fi
+
+# we have to set HOME, otherwise chrome can't find ~/.asoundrc
+HOME=/home/jibri
+DISPLAY=":${INSTANCE_INDEX}"
+PULSE_RUNTIME_PATH="/run/pulse-${INSTANCE_INDEX}"
+export HOME DISPLAY PULSE_RUNTIME_PATH
+
+CONFIG_FILE="/etc/jitsi/jibri/jibri-${INSTANCE_INDEX}.conf"
+LOGGING_FILE="/etc/jitsi/jibri/logging-${INSTANCE_INDEX}.properties"
+
+CHROME_BIN_PATH="$(which google-chrome)"
+[ $? -ne 0 ] && CHROME_BIN_PATH="$(which chromium)"
+# Pre-warm chrome so the first recording starts quickly. Each
+# instance pre-warms its own DISPLAY so the warm-up actually maps
+# to the X server we'll use later.
+[ -n "$CHROME_BIN_PATH" ] && \
+    s6-setuidgid jibri \
+        env DISPLAY="$DISPLAY" PULSE_RUNTIME_PATH="$PULSE_RUNTIME_PATH" \
+        "$CHROME_BIN_PATH" --timeout=1000 --headless about:blank
+
+DAEMON="java \
+    -Djava.util.logging.config.file=${LOGGING_FILE} \
+    -Dconfig.file=${CONFIG_FILE} \
+    -jar /opt/jitsi/jibri/jibri.jar \
+    --config /etc/jitsi/jibri/config.json"
+exec s6-setuidgid jibri /bin/bash -c "exec $DAEMON"
+RUN
+
+# Install the same run script in every cloned service dir.
+for i in $(seq 0 $(( MAX_JIBRI_INSTANCES - 1 ))); do
+    install -m 755 /tmp/_xorg_run  "/etc/services.d/15-jibri-xorg-${i}/run"
+    install -m 755 /tmp/_pulse_run "/etc/services.d/16-jibri-pulse-${i}/run"
+    install -m 755 /tmp/_jibri_run "/etc/services.d/17-jibri-${i}/run"
+done
+rm -f /tmp/_xorg_run /tmp/_pulse_run /tmp/_jibri_run
 
 # Tell prosody about the recorder hidden domain.  The upstream
 # template gates the relevant blocks on $ENABLE_RECORDING which

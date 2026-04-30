@@ -108,6 +108,38 @@ if [[ "${ENABLE_RECORDING:-}" == "1" ]]; then
     # --kiosk for full-screen recording; --autoplay-policy=no-user-gesture-required
     # so jitsi's media autoplays without a click.
     CHROMIUM_FLAGS_VAL="--use-fake-ui-for-media-stream,--start-maximized,--kiosk,--enabled,--autoplay-policy=no-user-gesture-required,--disable-infobars,--disable-blink-features=AutomationControlled,--no-default-browser-check,--no-first-run"
+
+    # Number of parallel Jibri instances to start. Each one needs
+    # roughly 1.4 GB RAM + 1.4 vCPU while a recording is in flight,
+    # so the operator should size [runtime].memory_mb / cpu_mcpu in
+    # openhost.toml accordingly. Hard upper bound matches the build-
+    # time MAX_JIBRI_INSTANCES baked into the image (see
+    # patches/apply-patches.sh).
+    BUILD_MAX="$(cat /etc/openhost-jibri-max-instances 2>/dev/null || echo 6)"
+    REQUESTED="${MAX_PARALLEL_RECORDINGS:-1}"
+    if ! [[ "$REQUESTED" =~ ^[1-9][0-9]*$ ]]; then
+        log "FATAL: MAX_PARALLEL_RECORDINGS must be a positive integer (got: $REQUESTED)"
+        exit 1
+    fi
+    if (( REQUESTED > BUILD_MAX )); then
+        log "WARN: MAX_PARALLEL_RECORDINGS=$REQUESTED exceeds compiled-in max $BUILD_MAX; clamping"
+        REQUESTED="$BUILD_MAX"
+    fi
+    MAX_PARALLEL_RECORDINGS_VAL="$REQUESTED"
+    log "jibri parallel recording instances: $MAX_PARALLEL_RECORDINGS_VAL (max baked: $BUILD_MAX)"
+
+    # Persist a stable per-deployment instance-id prefix.  The
+    # rendered jibri.conf hardcodes JIBRI_INSTANCE_ID at template
+    # render time, so we want the prefix to survive container
+    # restarts; otherwise jicofo's brewery state would see a brand
+    # new pool of jibris on every reboot.  We append "-N" per
+    # instance index in the cont-init renderer.
+    INSTANCE_ID_PREFIX_FILE="$SECRETS_DIR/jibri_instance_id_prefix"
+    if [[ ! -f "$INSTANCE_ID_PREFIX_FILE" ]]; then
+        printf 'jibri-%s' "$(openssl rand -hex 4)" > "$INSTANCE_ID_PREFIX_FILE"
+        chmod 600 "$INSTANCE_ID_PREFIX_FILE"
+    fi
+    OPENHOST_JIBRI_INSTANCE_ID_PREFIX_VAL="$(cat "$INSTANCE_ID_PREFIX_FILE")"
 fi
 
 # -------------------------------------------------------------- JVB addr
@@ -157,6 +189,9 @@ printf '%s' "$JVB_AUTH_PASSWORD_VAL"      > "$CENV/JVB_AUTH_PASSWORD"
 [[ -n "${JIBRI_XMPP_PASSWORD_VAL:-}" ]] && printf '%s' "$JIBRI_XMPP_PASSWORD_VAL" > "$CENV/JIBRI_XMPP_PASSWORD"
 [[ -n "${JIBRI_RECORDER_PASSWORD_VAL:-}" ]] && printf '%s' "$JIBRI_RECORDER_PASSWORD_VAL" > "$CENV/JIBRI_RECORDER_PASSWORD"
 [[ -n "${CHROMIUM_FLAGS_VAL:-}" ]] && printf '%s' "$CHROMIUM_FLAGS_VAL" > "$CENV/CHROMIUM_FLAGS"
+[[ -n "${MAX_PARALLEL_RECORDINGS_VAL:-}" ]] && printf '%s' "$MAX_PARALLEL_RECORDINGS_VAL" > "$CENV/MAX_PARALLEL_RECORDINGS"
+[[ -n "${OPENHOST_JIBRI_INSTANCE_ID_PREFIX_VAL:-}" ]] && \
+    printf '%s' "$OPENHOST_JIBRI_INSTANCE_ID_PREFIX_VAL" > "$CENV/OPENHOST_JIBRI_INSTANCE_ID_PREFIX"
 [[ -n "$JVB_ADVERTISE_IPS_VAL" ]] && printf '%s' "$JVB_ADVERTISE_IPS_VAL" > "$CENV/JVB_ADVERTISE_IPS"
 # JVB_PORT defaults to 10000 in the upstream templates; we pin 9500
 # to match the [[ports]] entry in openhost.toml (OpenHost only allows

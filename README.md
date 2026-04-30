@@ -137,6 +137,39 @@ Disk usage is capped at 5 GiB by default, with oldest-first
 eviction. Tmp uploads-in-progress count against the cap too, so a
 flood of unfinalized uploads can't bypass it.
 
+### Parallel recordings
+
+By default the container runs **one** Jibri instance, so two users
+who try to start a recording at the same time will see the second
+attempt fail with "Recording is currently unavailable, please try
+again later". To allow N concurrent recordings, set
+`MAX_PARALLEL_RECORDINGS=N` in the Dockerfile ENV block (or the
+OpenHost `[env]` overrides) where `N` is between 1 and 6.
+
+Each additional Jibri instance consumes roughly **1.5 GB RAM** and
+**1.5 vCPU** while a recording is in flight (Chrome + ffmpeg at
+720p30 are dominant). You must bump `[resources]` in `openhost.toml`
+proportionally before deploying. Suggested sizing:
+
+| MAX_PARALLEL_RECORDINGS | memory_mb | cpu_millicores |
+| --- | --- | --- |
+| 1 (default) | 5120  | 3000 |
+| 2           | 6500  | 4500 |
+| 3           | 8000  | 6000 |
+| 4           | 9500  | 7500 |
+| 5           | 11000 | 9000 |
+| 6           | 12500 | 10500 |
+
+Numbers above include ~3 GB / 2 vCPU baseline for prosody, jicofo,
+jvb, and nginx. The hard upper bound of 6 is baked into the image
+at build time (see `MAX_JIBRI_INSTANCES` in `patches/apply-patches.sh`).
+There is no runtime cost for instances beyond `MAX_PARALLEL_RECORDINGS`
+— their s6 services self-disable on boot.
+
+When the limit is exceeded, jicofo returns a `service-unavailable`
+error to the requesting client and Jitsi shows the standard error
+toast. There is no built-in queueing.
+
 ## Privileged-app requirement
 
 Jibri's recording pipeline requires a few host-level capabilities
