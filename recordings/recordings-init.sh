@@ -1,13 +1,18 @@
 #!/usr/bin/with-contenv bash
 # Cont-init for the openhost-jitsi recordings sidecar.
 #
-# Runs after the upstream web cont-init (13-web-config). By that
-# point /config/web/nginx-custom/ is the directory that the
-# already-rendered meet.conf includes via
-#     include /config/web/nginx-custom/*.conf;
-# (the openhost patches rewrite the upstream /config/nginx-custom
-# path to /config/web/nginx-custom). We drop our recordings nginx
-# fragment there before nginx itself starts.
+# Runs after the upstream web cont-init (13-web-config) so that
+# /config/web/nginx/ is already populated with the rendered
+# meet.conf. We then:
+#   1. Render an s6 run script for the sidecar with the resolved
+#      data dir baked in.
+#   2. Drop our nginx fragment into /config/web/nginx-custom/.
+#   3. Inject the
+#         include /config/web/nginx-custom/*.conf;
+#      directive into the rendered meet.conf, because stable-9955's
+#      meet.conf doesn't ship that include line (newer upstream
+#      versions do; see comment around the python injection block
+#      below).
 #
 # Idempotent: safe to re-run on every container boot.
 

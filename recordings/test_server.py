@@ -370,6 +370,31 @@ def test_admin_delete_with_wrong_token_returns_404(running_server):
     assert code == 404
 
 
+def test_health_endpoint(running_server):
+    """The /api/recordings/health endpoint should always respond 200."""
+    base = running_server["base"]
+    code, body, _ = _get(f"{base}/api/recordings/health")
+    assert code == 200
+    assert json.loads(body)["ok"] is True
+
+
+def test_listing_shows_uploading_state_for_unfinalized(running_server):
+    """An in-progress (unfinalized) recording must appear in the
+    listing as 'uploading' without action links."""
+    base = running_server["base"]
+    token = running_server["token"]
+    code, body = _post_json(f"{base}/api/recordings/init", {"room": "midway"})
+    rec_id = body["id"]
+    _post_bytes(f"{base}/api/recordings/{rec_id}/chunk", b"partial")
+
+    code, html_body, _ = _get(f"{base}/{token}/")
+    text = html_body.decode("utf-8")
+    assert "midway" in text
+    assert "uploading" in text
+    # An unfinalized row must not show a download link.
+    assert f"recording/{rec_id}" not in text
+
+
 # ---- security: oversized chunk rejection ---------------------------------
 
 

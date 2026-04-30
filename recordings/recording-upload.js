@@ -226,33 +226,34 @@
             (async function () {
                 var blob;
                 try {
-                    try {
-                        var r = await fetch(anchorHref);
-                        if (!r.ok) {
-                            throw new Error('blob URL fetch returned HTTP ' + r.status);
-                        }
-                        blob = await r.blob();
-                    } catch (e) {
-                        log('failed to read blob; falling back to download', e);
-                        showNotice('Could not read recording for upload; saving locally instead.', { autoHideMs: 8000 });
-                        try { originalClick.apply(anchor, []); } catch (e2) { log('native click also failed', e2); }
-                        return;
+                    var r = await fetch(anchorHref);
+                    if (!r.ok) {
+                        throw new Error('blob URL fetch returned HTTP ' + r.status);
                     }
-                    try {
-                        await uploadBlob(blob);
-                    } catch (e) {
-                        log('upload failed; falling back to download', e);
-                        showNotice(
-                            'Upload failed (' + safeText(e && e.message ? e.message : String(e)) + '). Saving locally instead.',
-                            { autoHideMs: 12000 }
-                        );
-                        fallbackDownload(blob, anchorDownload);
-                    }
-                } finally {
-                    // Jitsi's blob URL holds the full recording in memory;
-                    // release it whether we succeeded, failed, or returned
-                    // early due to a fetch error.
-                    try { URL.revokeObjectURL(anchorHref); } catch (e) {}
+                    blob = await r.blob();
+                } catch (e) {
+                    log('failed to read blob; falling back to native download', e);
+                    showNotice('Could not read recording for upload; saving locally instead.', { autoHideMs: 8000 });
+                    // Bypass the hook, let the browser do the
+                    // download synchronously. Don't revoke
+                    // anchorHref — the browser still needs it.
+                    try { originalClick.apply(anchor, []); } catch (e2) { log('native click also failed', e2); }
+                    return;
+                }
+                // We hold our own copy of the bytes in `blob`; the
+                // original blob URL can be released as soon as we've
+                // read it. fallbackDownload creates a fresh URL on
+                // top of `blob` if upload fails.
+                try { URL.revokeObjectURL(anchorHref); } catch (e) {}
+                try {
+                    await uploadBlob(blob);
+                } catch (e) {
+                    log('upload failed; falling back to download', e);
+                    showNotice(
+                        'Upload failed (' + safeText(e && e.message ? e.message : String(e)) + '). Saving locally instead.',
+                        { autoHideMs: 12000 }
+                    );
+                    fallbackDownload(blob, anchorDownload);
                 }
             })().catch(function (e) {
                 log('unexpected error in upload pipeline', e);

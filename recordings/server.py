@@ -152,8 +152,8 @@ def _disk_usage(rec_dir: Path) -> int:
         if p.is_file():
             try:
                 total += p.stat().st_size
-            except OSError:
-                pass
+            except OSError as e:
+                logger.warning("Could not stat %s for quota accounting: %s", p.name, e)
     return total
 
 
@@ -434,10 +434,20 @@ class _Handler(BaseHTTPRequestHandler):
         # otherwise an attacker could claim a large Content-Length,
         # disconnect, and force eviction of every finalized recording
         # while contributing zero bytes themselves.
+        #
+        # If the write fails partway, truncate back to the pre-chunk
+        # size so that a client retry doesn't append duplicate bytes
+        # on top of a partial write (would corrupt the WebM).
+        pre_chunk_size = tmp.stat().st_size if tmp.exists() else 0
         try:
             written = self._stream_to_file(tmp, length)
         except OSError as e:
-            logger.exception("write failed for %s", rec_id)
+            logger.exception("write failed for %s; rolling back tmp to %d bytes", rec_id, pre_chunk_size)
+            try:
+                with tmp.open("ab") as fh:
+                    fh.truncate(pre_chunk_size)
+            except OSError:
+                logger.exception("rollback truncate failed for %s; tmp may be corrupted", rec_id)
             return self._error(HTTPStatus.INTERNAL_SERVER_ERROR, f"write failed: {e}")
 
         with _state_lock:
@@ -526,9 +536,10 @@ class _Handler(BaseHTTPRequestHandler):
     # -- handlers: admin path ----------------------------------------------
 
     def _handle_admin_get(self, tail: str, query: dict[str, list[str]]) -> None:
-        # /<token>/        → HTML listing
+        # /<token>/        → HTML listing (do_GET's regex consumes
+        # the trailing slash before the tail capture, so tail is "")
         # /<token>/recording/<id> → file download
-        if tail == "" or tail == "/":
+        if tail == "":
             return self._render_listing()
         m = re.match(r"^recording/([a-f0-9]{16})$", tail)
         if m:
@@ -571,6 +582,9 @@ class _Handler(BaseHTTPRequestHandler):
             fh = path.open("rb")
         except FileNotFoundError:
             return self._error(HTTPStatus.NOT_FOUND, "not found")
+        except OSError as e:
+            logger.exception("could not open %s for serving", rec_id)
+            return self._error(HTTPStatus.INTERNAL_SERVER_ERROR, f"open failed: {e}")
 
         try:
             size = os.fstat(fh.fileno()).st_size
