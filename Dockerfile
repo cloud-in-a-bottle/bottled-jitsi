@@ -70,7 +70,12 @@ RUN apt-dpkg-wrap apt-get update && \
         libgl1-mesa-dri pulseaudio dbus dbus-x11 rtkit \
         unzip fonts-noto fonts-noto-cjk libcap2-bin \
         xserver-xorg-core xserver-xorg-video-dummy \
-        x11-xserver-utils icewm procps && \
+        x11-xserver-utils icewm procps \
+        libatk1.0-0 libatk-bridge2.0-0 libcups2 libxcomposite1 \
+        libxdamage1 libxfixes3 libxrandr2 libgbm1 libxkbcommon0 \
+        libpangocairo-1.0-0 libpango-1.0-0 libcairo2 libnss3 \
+        libnspr4 libdrm2 libasound2 libgtk-3-0 libdbus-1-3 \
+        ca-certificates xdg-utils && \
     apt-cleanup && \
     rm -rf /var/lib/apt/lists/* && \
     adduser jibri rtkit
