@@ -111,9 +111,10 @@ if [[ "${ENABLE_RECORDING:-}" == "1" ]]; then
 
     # Number of parallel Jibri instances to start. Each one needs
     # roughly 1.5 GB RAM + 1.5 vCPU while a recording is in flight,
-    # so the operator should size [runtime].memory_mb / cpu_mcpu in
-    # openhost.toml accordingly. Hard upper bound matches the build-
-    # time MAX_JIBRI_INSTANCES baked into the image (see
+    # so the operator should size [resources].memory_mb /
+    # cpu_millicores in openhost.toml accordingly (see the README
+    # for a sizing table). Hard upper bound matches the build-time
+    # MAX_JIBRI_INSTANCES baked into the image (see
     # patches/apply-patches.sh).
     BUILD_MAX="$(cat /etc/openhost-jibri-max-instances 2>/dev/null || echo 6)"
     REQUESTED="${MAX_PARALLEL_RECORDINGS:-1}"
