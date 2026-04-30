@@ -162,6 +162,19 @@ RUN bash /tmp/patches/apply-patches.sh && rm -rf /tmp/patches
 COPY openhost-bootstrap/ /opt/openhost-jitsi/
 COPY openhost-bootstrap/00-openhost-config.sh /etc/cont-init.d/00-openhost-config
 
+# ---------------------------------------------------------------- recordings
+#
+# Browser-side local-recording with server-side persistence. A small
+# Python sidecar (server.py) accepts chunked uploads and serves the
+# resulting .webm files behind an admin-token URL. A JS shim
+# injected via body.html intercepts Jitsi's saveRecording download
+# and uploads the blob to the sidecar instead. Detailed design lives
+# in recordings/server.py and recordings/recording-upload.js.
+COPY recordings/server.py /opt/openhost-recordings/server.py
+COPY recordings/recordings-init.sh /etc/cont-init.d/14-recordings-init
+COPY recordings/recording-upload.js /usr/share/jitsi-meet/static/openhost-recordings.js
+COPY recordings/body.html /usr/share/jitsi-meet/body.html
+
 RUN chmod +x /etc/cont-init.d/* /opt/openhost-jitsi/*.sh 2>/dev/null || true
 
 # ---------------------------------------------------------------- runtime

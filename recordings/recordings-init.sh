@@ -1,0 +1,118 @@
+#!/usr/bin/with-contenv bash
+# Cont-init for the openhost-jitsi recordings sidecar.
+#
+# Runs after the upstream web cont-init (13-web-config). By that
+# point /config/web/nginx-custom/ is the directory that the
+# already-rendered meet.conf includes via
+#     include /config/web/nginx-custom/*.conf;
+# (the openhost patches rewrite the upstream /config/nginx-custom
+# path to /config/web/nginx-custom). We drop our recordings nginx
+# fragment there before nginx itself starts.
+#
+# Idempotent: safe to re-run on every container boot.
+
+set -eu
+
+log() { echo "[recordings-init] $*" >&2; }
+
+APP_DATA="${OPENHOST_APP_DATA_DIR:-/data/app_data/jitsi}"
+REC_DIR="$APP_DATA/recordings"
+ADMIN_TOKEN_FILE="$APP_DATA/recordings_admin_token"
+
+mkdir -p "$REC_DIR"
+chmod 700 "$REC_DIR"
+
+# Render the s6 run script for the sidecar with the resolved data
+# path baked in. We do this from cont-init rather than ship a static
+# run script because $OPENHOST_APP_DATA_DIR isn't known at image
+# build time.
+mkdir -p /etc/services.d/recordings
+cat > /etc/services.d/recordings/run <<EOF
+#!/usr/bin/with-contenv bash
+exec python3 /opt/openhost-recordings/server.py \\
+    --rec-dir "$REC_DIR" \\
+    --admin-token-file "$ADMIN_TOKEN_FILE" \\
+    --bind 127.0.0.1 \\
+    --port 5060
+EOF
+chmod +x /etc/services.d/recordings/run
+
+# Custom nginx fragment that proxies our two URL prefixes to the
+# sidecar.  The upstream meet.conf already does
+#     include /config/nginx-custom/*.conf;
+# so as long as we drop the file there before nginx (re)starts, it
+# gets loaded. Both prefixes are server-rooted, so they win against
+# the catch-all room-name location at the bottom of meet.conf, which
+# matches a single path segment.
+mkdir -p /config/web/nginx-custom
+cat > /config/web/nginx-custom/openhost-recordings.conf <<'EOF'
+# Proxy /api/recordings/{init,<id>/chunk,<id>/finalize} and the
+# admin-token-rooted /<token>/ listing pages to the recordings
+# sidecar on 127.0.0.1:5060.
+
+# Anonymous upload endpoints. POST-only at the application level;
+# nginx allows any method through and the sidecar 404s the rest.
+location ~ ^/api/recordings/(init|[a-f0-9]{16}/(chunk|finalize)|health)$ {
+    proxy_pass http://127.0.0.1:5060;
+    proxy_http_version 1.1;
+    proxy_set_header Host $host;
+    proxy_set_header X-Forwarded-For $remote_addr;
+    proxy_request_buffering off;
+    proxy_buffering off;
+    # The 5 MiB chunks the JS shim sends are well under nginx's
+    # global client_max_body_size 0 (which means "unlimited" in
+    # docker-jitsi-meet's meet.conf).
+    proxy_read_timeout 300s;
+    proxy_send_timeout 300s;
+}
+
+# Admin endpoints rooted at /<admin_token>/. The sidecar enforces
+# the token equality check internally; we proxy any single-segment
+# prefix path so the listing URL works.  The matching room-name
+# location below this in meet.conf would otherwise swallow it.
+#
+# We can't easily filter by token value at the nginx layer (it
+# changes per deploy), so we proxy everything here that:
+#   * has at least 24 chars in the first segment (admin token is
+#     32 base64 chars; jitsi room names tend to be shorter and
+#     contain user-friendly words), AND
+#   * looks like base64-url
+# False positives just hit the sidecar's 404 path; false negatives
+# (legitimate admin URLs that don't match the heuristic) would be
+# routed to jitsi as a room name. To avoid that: don't pick a room
+# name longer than 23 chars OR matching ^[A-Za-z0-9_-]{24,}$.
+location ~ ^/[A-Za-z0-9_-]{24,}/?$ {
+    proxy_pass http://127.0.0.1:5060;
+    proxy_http_version 1.1;
+    proxy_set_header Host $host;
+    proxy_set_header X-Forwarded-For $remote_addr;
+}
+
+location ~ ^/[A-Za-z0-9_-]{24,}/recording/[a-f0-9]{16}$ {
+    proxy_pass http://127.0.0.1:5060;
+    proxy_http_version 1.1;
+    proxy_set_header Host $host;
+    proxy_set_header X-Forwarded-For $remote_addr;
+    proxy_buffering off;
+    proxy_read_timeout 600s;
+}
+EOF
+
+log "config written: $REC_DIR (data dir), $ADMIN_TOKEN_FILE (admin token)"
+
+# Print the admin URL prominently in the logs for the operator.
+# The token file is created by the sidecar on first start, so this
+# may be empty on the very first boot — the sidecar logs it again
+# right after creating it.
+if [[ -s "$ADMIN_TOKEN_FILE" ]]; then
+    HOST=""
+    if [[ -f "$APP_DATA/hostname" ]]; then
+        HOST="$(cat "$APP_DATA/hostname")"
+    fi
+    TOKEN="$(cat "$ADMIN_TOKEN_FILE")"
+    if [[ -n "$HOST" ]]; then
+        log "recordings listing URL: https://$HOST/$TOKEN/"
+    else
+        log "recordings listing URL: /$TOKEN/  (relative to the jitsi origin)"
+    fi
+fi
