@@ -25,6 +25,20 @@
 
     var CHUNK_SIZE = 5 * 1024 * 1024; // 5 MiB; matches sidecar default
     var INIT_URL = '/api/recordings/init';
+    // Per-request timeout. A stalled connection mid-upload would
+    // otherwise hang the page indefinitely with no recovery.
+    var FETCH_TIMEOUT_MS = 120000; // 2 minutes per chunk
+
+    function fetchWithTimeout(url, opts, timeoutMs) {
+        opts = opts || {};
+        if (typeof AbortController === 'undefined') {
+            return fetch(url, opts);
+        }
+        var ctrl = new AbortController();
+        var t = setTimeout(function () { ctrl.abort(); }, timeoutMs || FETCH_TIMEOUT_MS);
+        opts.signal = ctrl.signal;
+        return fetch(url, opts).finally(function () { clearTimeout(t); });
+    }
 
     function log() {
         try { console.log.apply(console, ['[openhost-recordings]'].concat([].slice.call(arguments))); } catch (e) {}
@@ -68,9 +82,16 @@
     }
 
     function getRoomName() {
-        // Jitsi's room name is the first non-empty path segment.
+        // Jitsi's room name is the first non-empty path segment;
+        // decode percent-escapes so a room called "My Room" survives
+        // the round trip through the URL bar (the sidecar's
+        // ROOM_RE rejects raw '%' characters).
         var seg = (window.location.pathname || '/').split('/').filter(Boolean);
-        return seg[0] || 'unknown';
+        try {
+            return decodeURIComponent(seg[0] || 'unknown');
+        } catch (e) {
+            return seg[0] || 'unknown';
+        }
     }
 
     function getStartedBy() {
@@ -97,7 +118,7 @@
         var startedBy = getStartedBy();
         var notice = showNotice('Uploading recording &hellip; (0%)');
 
-        var initResp = await fetch(INIT_URL, {
+        var initResp = await fetchWithTimeout(INIT_URL, {
             method: 'POST',
             credentials: 'same-origin',
             headers: { 'Content-Type': 'application/json' },
@@ -106,8 +127,16 @@
         if (!initResp.ok) {
             throw new Error('init failed: HTTP ' + initResp.status);
         }
-        var initBody = await initResp.json();
-        var id = initBody.id;
+        var initBody;
+        try {
+            initBody = await initResp.json();
+        } catch (e) {
+            throw new Error('init returned non-JSON body');
+        }
+        var id = initBody && initBody.id;
+        if (!id || !/^[a-f0-9]{16}$/.test(id)) {
+            throw new Error('init returned invalid id');
+        }
         var chunkSize = initBody.chunk_size || CHUNK_SIZE;
 
         var total = blob.size;
@@ -116,7 +145,7 @@
         while (sent < total) {
             var end = Math.min(sent + chunkSize, total);
             var slice = blob.slice(sent, end);
-            var resp = await fetch('/api/recordings/' + id + '/chunk', {
+            var resp = await fetchWithTimeout('/api/recordings/' + id + '/chunk', {
                 method: 'POST',
                 credentials: 'same-origin',
                 headers: { 'Content-Type': 'application/octet-stream' },
@@ -131,7 +160,7 @@
             notice.innerHTML = 'Uploading recording &hellip; (' + safeText(pct) + '%)';
         }
 
-        var finResp = await fetch('/api/recordings/' + id + '/finalize', {
+        var finResp = await fetchWithTimeout('/api/recordings/' + id + '/finalize', {
             method: 'POST',
             credentials: 'same-origin'
         });
@@ -179,26 +208,29 @@
             (async function () {
                 var blob;
                 try {
-                    var r = await fetch(anchorHref);
-                    blob = await r.blob();
-                } catch (e) {
-                    log('failed to read blob; falling back to download', e);
-                    showNotice('Could not read recording for upload; saving locally instead.', { autoHideMs: 8000 });
-                    try { originalClick.apply(anchor, []); } catch (e2) { log('native click also failed', e2); }
-                    return;
-                }
-                try {
-                    await uploadBlob(blob);
-                } catch (e) {
-                    log('upload failed; falling back to download', e);
-                    showNotice(
-                        'Upload failed (' + safeText(e && e.message ? e.message : String(e)) + '). Saving locally instead.',
-                        { autoHideMs: 12000 }
-                    );
-                    fallbackDownload(blob, anchorDownload);
+                    try {
+                        var r = await fetch(anchorHref);
+                        blob = await r.blob();
+                    } catch (e) {
+                        log('failed to read blob; falling back to download', e);
+                        showNotice('Could not read recording for upload; saving locally instead.', { autoHideMs: 8000 });
+                        try { originalClick.apply(anchor, []); } catch (e2) { log('native click also failed', e2); }
+                        return;
+                    }
+                    try {
+                        await uploadBlob(blob);
+                    } catch (e) {
+                        log('upload failed; falling back to download', e);
+                        showNotice(
+                            'Upload failed (' + safeText(e && e.message ? e.message : String(e)) + '). Saving locally instead.',
+                            { autoHideMs: 12000 }
+                        );
+                        fallbackDownload(blob, anchorDownload);
+                    }
                 } finally {
                     // Jitsi's blob URL holds the full recording in memory;
-                    // release it once we're done with the bytes.
+                    // release it whether we succeeded, failed, or returned
+                    // early due to a fetch error.
                     try { URL.revokeObjectURL(anchorHref); } catch (e) {}
                 }
             })().catch(function (e) {

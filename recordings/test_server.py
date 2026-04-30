@@ -355,6 +355,95 @@ def test_delete_unfinalized_removes_tmp(running_server):
 # ---- empty / large input edge cases --------------------------------------
 
 
+def test_unfinalized_uploads_count_against_quota(running_server):
+    """A flood of unfinalized uploads can't push past the cap."""
+    base = running_server["base"]
+
+    # Fill ~10 MiB cap with two unfinalized 4 MiB uploads, then try a third.
+    payload = b"\x00" * (4 * 1024 * 1024)
+    code, body = _post_json(f"{base}/api/recordings/init", {"room": "a"})
+    rec_a = body["id"]
+    _post_bytes(f"{base}/api/recordings/{rec_a}/chunk", payload)
+    code, body = _post_json(f"{base}/api/recordings/init", {"room": "b"})
+    rec_b = body["id"]
+    _post_bytes(f"{base}/api/recordings/{rec_b}/chunk", payload)
+
+    # Third upload init succeeds but the chunk should be refused
+    # because the cap-minus-evictable check fails (nothing finalized
+    # to evict, and tmp uploads are sticky).
+    code, body = _post_json(f"{base}/api/recordings/init", {"room": "c"})
+    rec_c = body["id"]
+
+    # Use http.client directly so we can observe the 507 even though
+    # our handler short-circuits before reading the body (urllib's
+    # higher-level urlopen sees the early-close as a broken pipe).
+    import http.client
+    from urllib.parse import urlparse as _urlparse
+
+    # Probe with a tiny body but a Content-Length claiming 4 MiB.
+    # Server's fail-fast check (which only inspects Content-Length,
+    # not the body) returns 507 immediately, before reading any bytes.
+    parts = _urlparse(base)
+    conn = http.client.HTTPConnection(parts.hostname, parts.port, timeout=10)
+    conn.request(
+        "POST",
+        f"/api/recordings/{rec_c}/chunk",
+        body=b"x",
+        headers={
+            "Content-Type": "application/octet-stream",
+            "Content-Length": str(4 * 1024 * 1024),
+        },
+    )
+    resp = conn.getresponse()
+    assert resp.status == 507
+    conn.close()
+
+
+def test_chunk_after_admin_delete_does_not_resurrect(running_server):
+    """If an admin DELETEs a recording mid-upload, the next chunk
+    must NOT recreate metadata for the deleted recording (zombie)."""
+    base = running_server["base"]
+    token = running_server["token"]
+    rec_dir = running_server["rec_dir"]
+
+    code, body = _post_json(f"{base}/api/recordings/init", {"room": "victim"})
+    rec_id = body["id"]
+    _post_bytes(f"{base}/api/recordings/{rec_id}/chunk", b"first")
+
+    assert _delete(f"{base}/{token}/recording/{rec_id}") == 200
+    assert not (rec_dir / f"{rec_id}.json").exists()
+
+    # A late chunk POST should NOT recreate metadata.
+    code, body = _post_bytes(f"{base}/api/recordings/{rec_id}/chunk", b"late")
+    assert code == 404
+    assert not (rec_dir / f"{rec_id}.json").exists()
+    # And the .webm.tmp should not linger.
+    assert not (rec_dir / f"{rec_id}.webm.tmp").exists()
+
+
+def test_finalize_410_when_file_was_deleted(running_server):
+    """If finalize is called twice and someone deleted the file
+    between, the second call surfaces 410 instead of misleading 200."""
+    base = running_server["base"]
+    rec_dir = running_server["rec_dir"]
+    code, body = _post_json(f"{base}/api/recordings/init", {"room": "r"})
+    rec_id = body["id"]
+    _post_bytes(f"{base}/api/recordings/{rec_id}/chunk", b"x")
+    req = urllib.request.Request(f"{base}/api/recordings/{rec_id}/finalize", method="POST")
+    urllib.request.urlopen(req, timeout=5).read()
+
+    # Simulate external removal of the .webm (e.g. partial admin
+    # delete that nuked the data file but not the JSON).
+    (rec_dir / f"{rec_id}.webm").unlink()
+
+    req = urllib.request.Request(f"{base}/api/recordings/{rec_id}/finalize", method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=5) as r:
+            pytest.fail(f"expected 410, got {r.status}")
+    except urllib.error.HTTPError as e:
+        assert e.code == 410
+
+
 def test_chunk_rejects_zero_length(running_server):
     """Content-Length: 0 isn't a valid chunk."""
     base = running_server["base"]

@@ -26,6 +26,15 @@ chmod 700 "$REC_DIR"
 # path baked in. We do this from cont-init rather than ship a static
 # run script because $OPENHOST_APP_DATA_DIR isn't known at image
 # build time.
+HOST=""
+if [[ -f "$APP_DATA/hostname" ]]; then
+    HOST="$(cat "$APP_DATA/hostname")"
+fi
+ORIGIN_HINT=""
+if [[ -n "$HOST" ]]; then
+    ORIGIN_HINT="https://$HOST"
+fi
+
 mkdir -p /etc/services.d/recordings
 cat > /etc/services.d/recordings/run <<EOF
 #!/usr/bin/with-contenv bash
@@ -33,7 +42,8 @@ exec python3 /opt/openhost-recordings/server.py \\
     --rec-dir "$REC_DIR" \\
     --admin-token-file "$ADMIN_TOKEN_FILE" \\
     --bind 127.0.0.1 \\
-    --port 5060
+    --port 5060 \\
+    --public-origin-hint "$ORIGIN_HINT"
 EOF
 chmod +x /etc/services.d/recordings/run
 
@@ -105,13 +115,9 @@ log "config written: $REC_DIR (data dir), $ADMIN_TOKEN_FILE (admin token)"
 # may be empty on the very first boot — the sidecar logs it again
 # right after creating it.
 if [[ -s "$ADMIN_TOKEN_FILE" ]]; then
-    HOST=""
-    if [[ -f "$APP_DATA/hostname" ]]; then
-        HOST="$(cat "$APP_DATA/hostname")"
-    fi
     TOKEN="$(cat "$ADMIN_TOKEN_FILE")"
-    if [[ -n "$HOST" ]]; then
-        log "recordings listing URL: https://$HOST/$TOKEN/"
+    if [[ -n "$ORIGIN_HINT" ]]; then
+        log "recordings listing URL: $ORIGIN_HINT/$TOKEN/"
     else
         log "recordings listing URL: /$TOKEN/  (relative to the jitsi origin)"
     fi

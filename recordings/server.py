@@ -23,7 +23,8 @@ Two classes of endpoint:
 Storage
 -------
 
-Files live under ``$RECORDINGS_DIR`` (passed via env, defaults to
+Files live under the directory passed via ``--rec-dir`` (the
+``recordings-init.sh`` cont-init points it at
 ``$OPENHOST_APP_DATA_DIR/recordings``):
 
     <id>.webm   - the finished recording
@@ -35,10 +36,12 @@ and the JSON has ``finalized: false``. ``finalize`` swaps it to
 ``<id>.webm``. A startup sweep deletes any orphaned ``*.tmp`` files
 and any JSON whose recording file is missing.
 
-A simple total-size quota (``MAX_TOTAL_BYTES``, default 5 GiB) is
-enforced by deleting the oldest ``finalized`` recordings whenever a
-new chunk would push us past the cap. Tmp uploads-in-progress are
-exempt from eviction so we don't trample our own writes.
+A total-size quota (``--max-bytes``, default 5 GiB) is enforced by
+deleting the oldest finalized recordings AFTER a successful chunk
+write. Pre-write eviction would let an attacker trigger eviction by
+claiming a large Content-Length and disconnecting; we instead
+fail-fast a chunk that couldn't possibly fit even with maximum
+eviction, and only actually evict once we've received bytes.
 """
 
 from __future__ import annotations
@@ -58,7 +61,7 @@ from datetime import datetime, timezone
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any, BinaryIO
+from typing import Any
 from urllib.parse import parse_qs, unquote, urlparse
 
 logger = logging.getLogger("openhost-jitsi-recordings")
@@ -111,6 +114,12 @@ def _read_meta(rec_dir: Path, rec_id: str) -> dict[str, Any] | None:
     except json.JSONDecodeError:
         logger.warning("Corrupt metadata for %s; ignoring", rec_id)
         return None
+    except OSError as e:
+        # Permissions / IO error reading the file. Log and treat as
+        # "no such recording" so callers don't propagate raw
+        # filesystem errors back to clients.
+        logger.warning("Could not read metadata for %s: %s", rec_id, e)
+        return None
 
 
 def _write_meta(rec_dir: Path, rec_id: str, meta: dict[str, Any]) -> None:
@@ -134,18 +143,31 @@ def _list_meta(rec_dir: Path) -> list[dict[str, Any]]:
     return out
 
 
-def _total_finalized_bytes(rec_dir: Path) -> int:
-    return sum(int(m.get("size_bytes", 0)) for m in _list_meta(rec_dir) if m.get("finalized"))
+def _disk_usage(rec_dir: Path) -> int:
+    """Total bytes consumed by finalized recordings + in-flight tmp
+    uploads. We count tmp files so a flood of unfinalized uploads
+    can't bypass the quota.
+    """
+    total = 0
+    for p in rec_dir.iterdir():
+        if p.is_file():
+            try:
+                total += p.stat().st_size
+            except OSError:
+                pass
+    return total
 
 
 def _evict_until_under_cap(rec_dir: Path, headroom_bytes: int, max_bytes: int) -> None:
     """Delete oldest finalized recordings until total + headroom <= cap.
 
-    The caller is about to write ``headroom_bytes`` more; we make
-    sure that fits. Tmp uploads-in-progress are not touched.
+    Tmp uploads-in-progress are NOT evicted (we don't know if more
+    bytes are coming) but they ARE counted in the total — a flood of
+    unfinalized uploads will refuse to evict any finalized recordings
+    once finalized bytes alone are under the cap.
     """
-    metas = sorted(_list_meta(rec_dir), key=lambda m: m.get("finished_at") or m.get("started_at", ""))
-    total = sum(int(m.get("size_bytes", 0)) for m in metas if m.get("finalized"))
+    metas = sorted(_list_meta(rec_dir), key=lambda m: m.get("started_at", ""))
+    total = _disk_usage(rec_dir)
     for meta in metas:
         if total + headroom_bytes <= max_bytes:
             return
@@ -153,12 +175,11 @@ def _evict_until_under_cap(rec_dir: Path, headroom_bytes: int, max_bytes: int) -
             continue
         rec_id = meta["id"]
         size = int(meta.get("size_bytes", 0))
-        # Delete the data file first; if THAT fails we keep the
-        # metadata so the listing still shows the (possibly partially
-        # broken) recording. If the metadata delete fails after the
-        # file delete we still subtract from ``total`` because the
-        # bytes are gone — the leftover .json is a small leak the
-        # next sweep will catch on restart.
+        # Delete the data file first; if that fails we keep the
+        # metadata so the listing still shows the broken recording.
+        # If only the metadata delete fails we still subtract from
+        # ``total`` — the bytes are gone — and the next startup
+        # sweep will reap the orphan json.
         try:
             _final_path(rec_dir, rec_id).unlink(missing_ok=True)
         except OSError as e:
@@ -236,8 +257,10 @@ class _State:
         self.rec_dir = rec_dir
         self.admin_token = admin_token
         self.max_bytes = max_bytes
-        # Used only to tell users in the recordings page where the
-        # download links live; if empty we fall back to relative URLs.
+        # Origin (scheme+host) used only when the server logs the
+        # listing URL at startup, so the operator can paste it into
+        # a browser. Inside the listing page itself, all URLs are
+        # relative.
         self.public_origin_hint = public_origin_hint or ""
 
 
@@ -345,8 +368,12 @@ class _Handler(BaseHTTPRequestHandler):
             "finalized": False,
         }
         with _state_lock:
-            _tmp_path(self.state.rec_dir, rec_id).touch()
-            _write_meta(self.state.rec_dir, rec_id, meta)
+            try:
+                _tmp_path(self.state.rec_dir, rec_id).touch()
+                _write_meta(self.state.rec_dir, rec_id, meta)
+            except OSError as e:
+                logger.exception("init failed for %s", rec_id)
+                return self._error(HTTPStatus.INTERNAL_SERVER_ERROR, f"could not initialize recording: {e}")
         logger.info("init recording %s in room %r by %r", rec_id, room, started_by)
         return self._json(200, {"id": rec_id, "chunk_size": DEFAULT_CHUNK_SIZE})
 
@@ -371,14 +398,28 @@ class _Handler(BaseHTTPRequestHandler):
             tmp = _tmp_path(self.state.rec_dir, rec_id)
             if not tmp.exists():
                 return self._error(HTTPStatus.GONE, "recording gone")
-            _evict_until_under_cap(self.state.rec_dir, length, self.state.max_bytes)
+            # Quick fail-fast capacity check: reject if even our most
+            # aggressive eviction couldn't fit the chunk. We don't
+            # ACT on the eviction yet — that happens only after we've
+            # actually received bytes — but if there's no possible way
+            # for the chunk to land, the client deserves an early 507.
+            current_usage = _disk_usage(self.state.rec_dir)
+            evictable = sum(
+                int(m.get("size_bytes", 0))
+                for m in _list_meta(self.state.rec_dir)
+                if m.get("finalized")
+            )
+            if (current_usage - evictable) + length > self.state.max_bytes:
+                return self._error(
+                    HTTPStatus.INSUFFICIENT_STORAGE,
+                    "disk quota exceeded; even evicting all finalized recordings wouldn't fit",
+                )
 
-        # Stream the body to disk in fixed-size reads. We don't hold
-        # the lock here — append-only writes to the tmp file are
-        # safe because chunk requests for the same rec_id are
-        # serialized by the client (one MediaRecorder, one upload
-        # loop). If a peer raced, the worst case is interleaved
-        # bytes; metadata stays consistent.
+        # Stream the body to disk in fixed-size reads outside the lock.
+        # Only AFTER we have actual bytes do we trigger eviction —
+        # otherwise an attacker could claim a large Content-Length,
+        # disconnect, and force eviction of every finalized recording
+        # while contributing zero bytes themselves.
         try:
             written = self._stream_to_file(tmp, length)
         except OSError as e:
@@ -386,9 +427,25 @@ class _Handler(BaseHTTPRequestHandler):
             return self._error(HTTPStatus.INTERNAL_SERVER_ERROR, f"write failed: {e}")
 
         with _state_lock:
-            meta = _read_meta(self.state.rec_dir, rec_id) or meta
-            meta["size_bytes"] = int(meta.get("size_bytes", 0)) + written
-            _write_meta(self.state.rec_dir, rec_id, meta)
+            meta = _read_meta(self.state.rec_dir, rec_id)
+            if meta is None:
+                # An admin DELETE finished while we were streaming.
+                # Don't recreate metadata for a recording that was
+                # explicitly removed; just drop the bytes we wrote.
+                try:
+                    _tmp_path(self.state.rec_dir, rec_id).unlink(missing_ok=True)
+                except OSError:
+                    pass
+                return self._error(HTTPStatus.NOT_FOUND, "recording was deleted mid-upload")
+            try:
+                meta["size_bytes"] = int(meta.get("size_bytes", 0)) + written
+                _write_meta(self.state.rec_dir, rec_id, meta)
+            except OSError as e:
+                logger.exception("metadata write failed after chunk for %s", rec_id)
+                return self._error(HTTPStatus.INTERNAL_SERVER_ERROR, f"metadata write failed: {e}")
+            # Now that we've actually written bytes, evict if needed
+            # to bring total usage back under the cap.
+            _evict_until_under_cap(self.state.rec_dir, 0, self.state.max_bytes)
         return self._json(200, {"ok": True, "received": written, "total": meta["size_bytes"]})
 
     def _handle_finalize(self, rec_id: str) -> None:
@@ -398,28 +455,42 @@ class _Handler(BaseHTTPRequestHandler):
             meta = _read_meta(self.state.rec_dir, rec_id)
             if meta is None:
                 return self._error(HTTPStatus.NOT_FOUND, "no such recording")
-            if meta.get("finalized"):
-                return self._json(200, {"ok": True, "already_finalized": True})
             tmp = _tmp_path(self.state.rec_dir, rec_id)
             final = _final_path(self.state.rec_dir, rec_id)
+            if meta.get("finalized"):
+                # Idempotent — but verify the file actually exists.
+                # If it doesn't, the recording is irrecoverably gone
+                # (admin delete, manual rm, etc.); surface 410 so the
+                # client doesn't think the upload still succeeded.
+                if final.exists():
+                    return self._json(200, {"ok": True, "already_finalized": True})
+                return self._error(HTTPStatus.GONE, "recording deleted after finalize")
             if not tmp.exists():
                 return self._error(HTTPStatus.GONE, "recording gone")
             try:
                 os.replace(tmp, final)
+            except OSError as e:
+                logger.exception("rename failed for %s", rec_id)
+                return self._error(HTTPStatus.INTERNAL_SERVER_ERROR, f"rename failed: {e}")
+            # The bytes are committed; from here on we always mark
+            # the recording finalized even if the stat or metadata
+            # write trip — a follow-up retry would need a way to
+            # reach the data, so we don't want to leave it in a
+            # half-renamed state. Use the on-disk size if available;
+            # fall back to the size we tracked in metadata.
+            try:
                 size = final.stat().st_size
-                meta["finished_at"] = _now_iso()
-                meta["size_bytes"] = size
-                meta["finalized"] = True
+            except OSError as e:
+                logger.warning("stat failed after rename for %s: %s; using tracked size", rec_id, e)
+                size = int(meta.get("size_bytes", 0))
+            meta["finished_at"] = _now_iso()
+            meta["size_bytes"] = size
+            meta["finalized"] = True
+            try:
                 _write_meta(self.state.rec_dir, rec_id, meta)
             except OSError as e:
-                # If the rename succeeded but the metadata write failed,
-                # the .webm exists on disk but the JSON still says
-                # finalized=False. The next admin DELETE or startup
-                # sweep will eventually clean it up; we surface 500 so
-                # the client can retry finalize, which is a no-op for
-                # the rename and only re-attempts the metadata write.
-                logger.exception("finalize failed for %s", rec_id)
-                return self._error(HTTPStatus.INTERNAL_SERVER_ERROR, f"finalize failed: {e}")
+                logger.exception("metadata write failed in finalize for %s", rec_id)
+                return self._error(HTTPStatus.INTERNAL_SERVER_ERROR, f"metadata write failed: {e}")
         logger.info("finalized recording %s (%d bytes)", rec_id, meta["size_bytes"])
         return self._json(200, {"ok": True})
 

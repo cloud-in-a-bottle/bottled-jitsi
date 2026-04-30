@@ -135,7 +135,9 @@ delete every recording. The admin token is auto-generated on first
 boot and persists in app data; rotate it by deleting
 `$OPENHOST_APP_DATA_DIR/recordings_admin_token` and restarting.
 
-Disk usage is capped at 5 GB by default, with oldest-first eviction.
+Disk usage is capped at 5 GiB by default, with oldest-first
+eviction. Tmp uploads-in-progress count against the cap too, so a
+flood of unfinalized uploads can't bypass it.
 
 ### Caveat: long room names
 
