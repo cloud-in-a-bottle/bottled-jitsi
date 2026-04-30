@@ -287,7 +287,7 @@ assert old in text, "could not find tpl block in 16-jibri-config to replace"
 text = text.replace(old, new, 1)
 
 # The upstream cont-init also runs `mkdir -p /config/logs` and chowns
-# it; that's still useful as a no-op fallback (log path for any\n
+# it; that's still useful as a no-op fallback (log path for any
 # instance whose logging.properties wasn't rewritten correctly).
 p.write_text(text)
 PY
@@ -318,14 +318,18 @@ for instance_kind in xorg pulse jibri; do
     rm -rf "/etc/services.d/$src"
 done
 
-# Now write the run scripts. Each is a single template that derives
-# its instance index from $S6_SERVICE_DIR and exports the right env
-# before exec'ing the daemon.
-
-cat > /tmp/_xorg_run <<'RUN'
-#!/usr/bin/with-contenv bash
-# Derive instance index from this script's own directory name
-# (15-jibri-xorg-N). $0 is the absolute path to this run script.
+# Shared prologue sourced from each per-instance run script. It
+# (a) derives INSTANCE_INDEX from the service-dir name, and
+# (b) self-disables the service when ENABLE_RECORDING != 1 or when
+#     INSTANCE_INDEX >= MAX_PARALLEL_RECORDINGS.
+# Both checks must run before any per-service setup, so we put them
+# in a shared file rather than duplicating across the three run
+# script bodies.
+mkdir -p /etc/jitsi/jibri
+cat > /etc/jitsi/jibri/run-prologue.sh <<'PROLOGUE'
+# Sourced (not exec'd) by every jibri-* services.d/*/run script.
+# Sets INSTANCE_INDEX and self-disables the service if it should
+# not run with the current MAX_PARALLEL_RECORDINGS.
 SVC_DIR="$(dirname "$(readlink -f "$0")")"
 INSTANCE_INDEX="${SVC_DIR##*-}"
 
@@ -335,6 +339,15 @@ fi
 if (( INSTANCE_INDEX >= ${MAX_PARALLEL_RECORDINGS:-1} )); then
     exec s6-svc -O "$SVC_DIR"
 fi
+PROLOGUE
+chmod 644 /etc/jitsi/jibri/run-prologue.sh
+
+# Per-instance run scripts. Each sources the shared prologue, then
+# does only the kind-specific setup before exec'ing its daemon.
+
+cat > /tmp/_xorg_run <<'RUN'
+#!/usr/bin/with-contenv bash
+. /etc/jitsi/jibri/run-prologue.sh
 
 DISPLAY=":${INSTANCE_INDEX}"
 DAEMON="/usr/bin/Xorg -nocursor -noreset +extension RANDR +extension RENDER \
@@ -345,15 +358,7 @@ RUN
 
 cat > /tmp/_pulse_run <<'RUN'
 #!/usr/bin/with-contenv bash
-SVC_DIR="$(dirname "$(readlink -f "$0")")"
-INSTANCE_INDEX="${SVC_DIR##*-}"
-
-if [[ "${ENABLE_RECORDING:-1}" != "1" ]]; then
-    exec s6-svc -O "$SVC_DIR"
-fi
-if (( INSTANCE_INDEX >= ${MAX_PARALLEL_RECORDINGS:-1} )); then
-    exec s6-svc -O "$SVC_DIR"
-fi
+. /etc/jitsi/jibri/run-prologue.sh
 
 # Each pulse instance gets its own runtime dir so the unix sockets
 # don't collide. We also override the log path so we can tell whose
@@ -374,15 +379,7 @@ RUN
 
 cat > /tmp/_jibri_run <<'RUN'
 #!/usr/bin/with-contenv bash
-SVC_DIR="$(dirname "$(readlink -f "$0")")"
-INSTANCE_INDEX="${SVC_DIR##*-}"
-
-if [[ "${ENABLE_RECORDING:-1}" != "1" ]]; then
-    exec s6-svc -O "$SVC_DIR"
-fi
-if (( INSTANCE_INDEX >= ${MAX_PARALLEL_RECORDINGS:-1} )); then
-    exec s6-svc -O "$SVC_DIR"
-fi
+. /etc/jitsi/jibri/run-prologue.sh
 
 # we have to set HOME, otherwise chrome can't find ~/.asoundrc
 HOME=/home/jibri
@@ -396,12 +393,19 @@ LOGGING_FILE="/etc/jitsi/jibri/logging-${INSTANCE_INDEX}.properties"
 CHROME_BIN_PATH="$(which google-chrome)"
 [ $? -ne 0 ] && CHROME_BIN_PATH="$(which chromium)"
 # Pre-warm chrome so the first recording starts quickly. Each
-# instance pre-warms its own DISPLAY so the warm-up actually maps
-# to the X server we'll use later.
-[ -n "$CHROME_BIN_PATH" ] && \
-    s6-setuidgid jibri \
+# instance pre-warms against its own DISPLAY so the cached state
+# applies when jibri actually launches chromedriver later.
+#
+# Note: --timeout is a chromedriver flag (not chrome's), so we wrap
+# the invocation in coreutils `timeout` to bound the warm-up. If the
+# Xorg for this DISPLAY isn't ready yet, we'd otherwise hang here
+# indefinitely and prevent jibri from ever starting.
+if [ -n "$CHROME_BIN_PATH" ]; then
+    timeout 30s s6-setuidgid jibri \
         env DISPLAY="$DISPLAY" PULSE_RUNTIME_PATH="$PULSE_RUNTIME_PATH" \
-        "$CHROME_BIN_PATH" --timeout=1000 --headless about:blank
+        "$CHROME_BIN_PATH" --headless about:blank \
+        || echo "[jibri-${INSTANCE_INDEX}] chrome pre-warm timed out or failed; continuing" >&2
+fi
 
 DAEMON="java \
     -Djava.util.logging.config.file=${LOGGING_FILE} \

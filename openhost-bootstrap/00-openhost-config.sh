@@ -110,7 +110,7 @@ if [[ "${ENABLE_RECORDING:-}" == "1" ]]; then
     CHROMIUM_FLAGS_VAL="--use-fake-ui-for-media-stream,--start-maximized,--kiosk,--enabled,--autoplay-policy=no-user-gesture-required,--disable-infobars,--disable-blink-features=AutomationControlled,--no-default-browser-check,--no-first-run"
 
     # Number of parallel Jibri instances to start. Each one needs
-    # roughly 1.4 GB RAM + 1.4 vCPU while a recording is in flight,
+    # roughly 1.5 GB RAM + 1.5 vCPU while a recording is in flight,
     # so the operator should size [runtime].memory_mb / cpu_mcpu in
     # openhost.toml accordingly. Hard upper bound matches the build-
     # time MAX_JIBRI_INSTANCES baked into the image (see
