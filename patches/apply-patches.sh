@@ -248,6 +248,22 @@ import re
 p = pathlib.Path("/etc/cont-init.d/16-jibri-config")
 text = p.read_text()
 
+# Drop the upstream cap_sys_admin precondition.  We run chrome with
+# --no-sandbox so the setuid sandbox helper (the whole reason the
+# original check existed) is never invoked.  Leaving the check in
+# would bail the cont-init at boot and prevent jibri from ever
+# starting under our minimum-privilege manifest.
+text = text.replace(
+    "# Check if the SYS_ADMIN cap is set\n"
+    "if ! capsh --has-p=cap_sys_admin; then\n"
+    '    echo "Required capability SYS_ADMIN is missing"\n'
+    "    exit 1\n"
+    "fi\n",
+    "# (cap_sys_admin precondition removed by openhost-jitsi: chrome\n"
+    "# runs --no-sandbox so the setuid sandbox helper isn't used.)\n",
+    1,
+)
+
 # Replace the four tpl calls with our looped renderer. The marker
 # we look for is the upstream "always recreate configs" comment
 # block; everything from there to the next blank line is replaced.

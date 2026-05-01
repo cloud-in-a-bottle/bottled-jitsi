@@ -170,33 +170,30 @@ When the limit is exceeded, jicofo returns a `service-unavailable`
 error to the requesting client and Jitsi shows the standard error
 toast. There is no built-in queueing.
 
-## Privileged-app requirement
+## Container requirements
 
-Jibri's recording pipeline requires a few host-level capabilities
-OpenHost normally denies to apps. The manifest opts in:
+Jibri's chrome runs with `--no-sandbox`, which avoids the
+CAP_SYS_ADMIN requirement of chromium's setuid sandbox helper.
+With the sandbox off, the app needs no special Linux capabilities
+or privileged opt-in — only a larger shared-memory segment for
+chrome's renderer:
 
 ```toml
-[runtime.security]
-privileged = true   # CAP_SYS_ADMIN for Chromium's headless sandbox
-
 [runtime.container]
 shm_mb = 2048           # Chrome renderer wants >= 2 GiB /dev/shm
-capabilities = ["SYS_ADMIN"]
 ```
 
-When you deploy this app the dashboard shows a red warning row
-("This app gets host-equivalent privilege..."). Acknowledge it
-explicitly.
+The chrome-renderer sandbox is the OS-level layer that protects
+against malicious *web content* attacking the host.  In our case
+chrome only ever navigates to our own jitsi-meet URL, so the
+sandbox doesn't really apply; dropping it lets the app run under
+OpenHost's normal least-privilege defaults instead of needing an
+operator-acknowledged privileged-app opt-in.
 
 Audio for the recording path is routed entirely in user space:
 chrome plays its meeting audio into a pulseaudio virtual sink
 (`jibri-loop`), and ffmpeg captures from that sink's monitor.
-No ALSA device access is needed.
-
-If you'd rather not grant these privileges, you can drop the
-`[runtime.security]` block + the SYS_ADMIN cap + shm_mb. Jibri
-won't start (the cont-init bails on the cap check) but the
-browser-side fallback still works for casual recording.
+No ALSA device access (`/dev/snd`) is needed.
 
 ## What's not included
 

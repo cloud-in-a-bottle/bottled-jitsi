@@ -8,19 +8,14 @@ image = "Dockerfile"
 port = 80
 # Jibri runs a headless Chrome that captures the meeting; Chrome's
 # renderer needs >= 2 GiB of /dev/shm or it OOM-kills mid-recording.
+# Audio for jibri's recording path is routed entirely through
+# pulseaudio's in-process virtual sink (jibri-loop), so we don't
+# need any ALSA device access (/dev/snd).  Chrome itself runs with
+# --no-sandbox (set in openhost-bootstrap/00-openhost-config.sh),
+# which avoids the CAP_SYS_ADMIN requirement of the setuid sandbox
+# helper, so this app needs no special capabilities or privileged
+# opt-in.
 shm_mb = 2048
-# CAP_SYS_ADMIN: required by Chromium's headless sandbox (creates
-# user/PID/mount namespaces).  Gated behind the privileged opt-in
-# below.  Audio for jibri's recording path is routed entirely
-# through pulseaudio's in-process virtual sink (jibri-loop), so we
-# don't need any ALSA device access (/dev/snd) — the meeting audio
-# never leaves chrome→pulse→ffmpeg in user space.
-capabilities = ["SYS_ADMIN"]
-
-[runtime.security]
-# CAP_SYS_ADMIN gives this container effective root inside its
-# user namespace.  Operators must accept the warning at deploy time.
-privileged = true
 
 # Jitsi Videobridge media port. OpenHost only exposes extra ports in
 # the 9000-9999 range, so we pin JVB_PORT=9500 inside the container

@@ -125,7 +125,15 @@ if [[ "${ENABLE_RECORDING:-}" == "1" ]]; then
     # "Chrome is being controlled by automated test software"
     # banner appear in recordings.
     #
-    # The list below is the upstream default plus three additions:
+    # Notable additions over the upstream default list:
+    #   --no-sandbox                       runs chrome without its
+    #     setuid sandbox helper.  Without this, chrome refuses to
+    #     start unless the container has CAP_SYS_ADMIN (so its
+    #     sandbox helper can call clone() with CLONE_NEWUSER).
+    #     We trust the only URL chrome navigates to (our own
+    #     jitsi-meet instance), so the renderer-process sandbox
+    #     buys little here, and dropping it lets us run the whole
+    #     app under OpenHost's normal least-privilege defaults.
     #   --disable-infobars                  hides the automation infobar
     #   --disable-blink-features=AutomationControlled
     #                                        hides navigator.webdriver hints
@@ -134,7 +142,7 @@ if [[ "${ENABLE_RECORDING:-}" == "1" ]]; then
     # We keep --use-fake-ui-for-media-stream so getUserMedia auto-grants;
     # --kiosk for full-screen recording; --autoplay-policy=no-user-gesture-required
     # so jitsi's media autoplays without a click.
-    CHROMIUM_FLAGS_VAL="--use-fake-ui-for-media-stream,--start-maximized,--kiosk,--enabled,--autoplay-policy=no-user-gesture-required,--disable-infobars,--disable-blink-features=AutomationControlled,--no-default-browser-check,--no-first-run"
+    CHROMIUM_FLAGS_VAL="--no-sandbox,--use-fake-ui-for-media-stream,--start-maximized,--kiosk,--enabled,--autoplay-policy=no-user-gesture-required,--disable-infobars,--disable-blink-features=AutomationControlled,--no-default-browser-check,--no-first-run"
 
     # Number of parallel Jibri instances to start. Each one needs
     # roughly 1.5 GB RAM + 1.5 vCPU while a recording is in flight,
