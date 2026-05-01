@@ -220,12 +220,30 @@ sed -i \
     -e 's#tpl /defaults/logging\.properties#tpl /defaults/jibri-logging.properties#g' \
     /etc/cont-init.d/16-jibri-config
 
-# Jibri's 10-config has a `capsh --has-p=cap_sys_admin` check that
-# exits non-zero if the cap isn't granted.  When ENABLE_RECORDING=0
-# we'd want to skip jibri's services entirely.  Easier: keep the
-# check (it correctly fails-fast if the operator forgot to declare
-# privileged=true in their manifest) and have the s6 service runs
-# do nothing when ENABLE_RECORDING != 1.
+# Drop the upstream cap_sys_admin precondition.  We run chrome with
+# --no-sandbox so the setuid sandbox helper (the whole reason the
+# original check existed) is never invoked.  Leaving the check in
+# would bail the cont-init at boot and prevent jibri from ever
+# starting under our minimum-privilege manifest.
+python3 - <<'PY'
+import pathlib
+p = pathlib.Path("/etc/cont-init.d/16-jibri-config")
+text = p.read_text()
+text = text.replace(
+    "# Check if the SYS_ADMIN cap is set\n"
+    "if ! capsh --has-p=cap_sys_admin; then\n"
+    '    echo "Required capability SYS_ADMIN is missing"\n'
+    "    exit 1\n"
+    "fi\n",
+    "# (cap_sys_admin precondition removed by openhost-jitsi: chrome\n"
+    "# runs --no-sandbox so the setuid sandbox helper isn't used.)\n",
+    1,
+)
+p.write_text(text)
+PY
+
+# Each s6 service for jibri is a no-op when ENABLE_RECORDING != 1, so
+# operators who don't want recording don't pay any chrome/xorg cost.
 for svc in 15-jibri-xorg 16-jibri-pulse 17-jibri; do
     sed -i '2a if [[ "${ENABLE_RECORDING:-1}" != "1" ]]; then s6-svc -O /var/run/s6/services/'"$svc"'; exit 0; fi' \
         /etc/services.d/$svc/run
