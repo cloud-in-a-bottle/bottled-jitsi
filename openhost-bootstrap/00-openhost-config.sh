@@ -60,6 +60,33 @@ echo "$HOSTNAME_VAL" > "$CACHED_HOSTNAME_FILE"
 PUBLIC_URL_VAL="${PUBLIC_URL:-https://$HOSTNAME_VAL}"
 log "PUBLIC_URL=$PUBLIC_URL_VAL hostname=$HOSTNAME_VAL"
 
+# -------------------------------------------------------------- self-loopback
+#
+# Jibri's headless chrome needs to navigate to PUBLIC_URL to join
+# the meeting it's about to record. With OpenHost on the new
+# pasta-networking podman backend (5.x), containers cannot reach
+# the host's external IP directly — that's what host.containers.internal
+# (= 10.200.0.1) is for. The public hostname normally resolves via
+# DNS to the host's eth0 IP, which is unroutable from inside.
+#
+# Override that one hostname in /etc/hosts to point at the host
+# loopback so chrome's request lands on the local OpenHost router
+# (caddy on :443) instead of being silently refused.  We only
+# rewrite the public hostname; everything else (jvb, etc.) keeps
+# its normal resolution.
+HOST_LOOPBACK_IP=""
+if getent hosts host.containers.internal >/dev/null 2>&1; then
+    HOST_LOOPBACK_IP="$(getent hosts host.containers.internal | awk '{print $1}' | head -1)"
+fi
+if [[ -n "$HOST_LOOPBACK_IP" ]]; then
+    if ! grep -q -F " $HOSTNAME_VAL" /etc/hosts 2>/dev/null; then
+        log "rewriting /etc/hosts: $HOSTNAME_VAL -> $HOST_LOOPBACK_IP (host loopback)"
+        echo "$HOST_LOOPBACK_IP $HOSTNAME_VAL" >> /etc/hosts
+    fi
+else
+    log "host.containers.internal not in DNS; skipping /etc/hosts rewrite"
+fi
+
 # -------------------------------------------------------------- passwords
 #
 # Generate on first boot; re-use on subsequent boots. These are the
