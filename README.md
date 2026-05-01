@@ -148,15 +148,17 @@ privileged = true   # CAP_SYS_ADMIN for Chromium's headless sandbox
 
 [runtime.container]
 shm_mb = 2048           # Chrome renderer wants >= 2 GiB /dev/shm
-devices = ["/dev/snd"]  # ALSA loopback for audio capture
 capabilities = ["SYS_ADMIN"]
 ```
 
 When you deploy this app the dashboard shows a red warning row
 ("This app gets host-equivalent privilege..."). Acknowledge it
-explicitly. The platform also requires the `snd-aloop` kernel
-module to be loaded on the host; the OpenHost ansible setup does
-this via `/etc/modules-load.d/openhost-snd-aloop.conf`.
+explicitly.
+
+Audio for the recording path is routed entirely in user space:
+chrome plays its meeting audio into a pulseaudio virtual sink
+(`jibri-loop`), and ffmpeg captures from that sink's monitor.
+No ALSA device access is needed.
 
 If you'd rather not grant these privileges, you can drop the
 `[runtime.security]` block + the SYS_ADMIN cap + shm_mb. Jibri

@@ -9,11 +9,12 @@ port = 80
 # Jibri runs a headless Chrome that captures the meeting; Chrome's
 # renderer needs >= 2 GiB of /dev/shm or it OOM-kills mid-recording.
 shm_mb = 2048
-# /dev/snd: ALSA loopback so jibri can pipe Chrome audio through
-# ffmpeg.  CAP_SYS_ADMIN: required by Chromium's headless sandbox
-# (creates user/PID/mount namespaces).  Both gated behind the
-# privileged opt-in below.
-devices = ["/dev/snd"]
+# CAP_SYS_ADMIN: required by Chromium's headless sandbox (creates
+# user/PID/mount namespaces).  Gated behind the privileged opt-in
+# below.  Audio for jibri's recording path is routed entirely
+# through pulseaudio's in-process virtual sink (jibri-loop), so we
+# don't need any ALSA device access (/dev/snd) — the meeting audio
+# never leaves chrome→pulse→ffmpeg in user space.
 capabilities = ["SYS_ADMIN"]
 
 [runtime.security]
