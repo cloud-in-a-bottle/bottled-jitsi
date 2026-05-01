@@ -139,23 +139,25 @@ flood of unfinalized uploads can't bypass it.
 
 ### Parallel recordings
 
-By default the container runs **one** Jibri instance, so two users
-who try to start a recording at the same time will see the second
-attempt fail with "Recording is currently unavailable, please try
-again later". To allow N concurrent recordings, set
-`MAX_PARALLEL_RECORDINGS=N` in the Dockerfile ENV block (or the
-OpenHost `[env]` overrides) where `N` is between 1 and 6.
+By default the container runs **three** Jibri instances, so up to
+three users can record concurrently. The fourth simultaneous attempt
+will fail with "Recording is currently unavailable, please try
+again later". To change the count, set `MAX_PARALLEL_RECORDINGS=N`
+in the Dockerfile ENV block (or the OpenHost `[env]` overrides)
+where `N` is between 1 and 6.
 
-Each additional Jibri instance consumes roughly **1.5 GB RAM** and
-**1.5 vCPU** while a recording is in flight (Chrome + ffmpeg at
-720p30 are dominant). You must bump `[resources]` in `openhost.toml`
-proportionally before deploying. Suggested sizing:
+Each Jibri instance consumes roughly **1.5 GB RAM** and **1.5 vCPU**
+while a recording is in flight (Chrome + ffmpeg at 720p30 are
+dominant); when idle, an enabled instance still holds an Xorg +
+chrome warm-up + jibri JVM at ~400 MB. **You must bump `[resources]`
+in `openhost.toml` in step with `MAX_PARALLEL_RECORDINGS`** —
+otherwise extra recordings will OOM-kill chrome mid-session.
 
 | MAX_PARALLEL_RECORDINGS | memory_mb | cpu_millicores |
 | --- | --- | --- |
-| 1 (default) | 5120  | 3000 |
+| 1           | 5120  | 3000 |
 | 2           | 6500  | 4500 |
-| 3           | 8000  | 6000 |
+| 3 (default) | 8000  | 6000 |
 | 4           | 9500  | 7500 |
 | 5           | 11000 | 9000 |
 | 6           | 12500 | 10500 |

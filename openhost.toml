@@ -27,11 +27,12 @@ container_port = 9500
 host_port = 9500
 
 [resources]
-# Adds ~2 GB for Jibri (Chrome + Xorg + ffmpeg) on top of the
-# baseline 3 GiB for JVB/Jicofo/Prosody/nginx.  Bump higher for
-# busier rooms or longer recordings.
-memory_mb = 5120
-cpu_millicores = 3000
+# Sized for the default MAX_PARALLEL_RECORDINGS=3: ~3 GiB / 2 vCPU
+# baseline for prosody/jicofo/jvb/nginx, plus ~1.5 GiB + 1.5 vCPU
+# per concurrent Jibri recording. Bump these in step with
+# MAX_PARALLEL_RECORDINGS (see the README's sizing table).
+memory_mb = 8000
+cpu_millicores = 6000
 
 [data]
 app_data = true
