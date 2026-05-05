@@ -139,13 +139,13 @@ flood of unfinalized uploads can't bypass it.
 
 ### Parallel recordings
 
-By default the container runs **six** Jibri instances (the maximum
-baked into the image), so up to six users can record concurrently.
-The seventh simultaneous attempt will fail with "Recording is
-currently unavailable, please try again later". To lower the count,
-set `MAX_PARALLEL_RECORDINGS=N` in the Dockerfile ENV block (or the
-OpenHost `[env]` overrides) where `N` is between 1 and 6, and bump
-``[resources]`` in step (see the sizing table below).
+By default the container runs **two** Jibri instances, so up to two
+users can record concurrently. The third simultaneous attempt will
+fail with "Recording is currently unavailable, please try again
+later". To raise the count, set `MAX_PARALLEL_RECORDINGS=N` in the
+Dockerfile ENV block (or the OpenHost `[env]` overrides) where `N`
+is between 1 and 6, and bump ``[resources]`` in step (see the sizing
+table below).
 
 Each Jibri instance consumes roughly **1.5 GB RAM** and **1.5 vCPU**
 while a recording is in flight (Chrome + ffmpeg at 720p30 are
@@ -157,11 +157,11 @@ otherwise extra recordings will OOM-kill chrome mid-session.
 | MAX_PARALLEL_RECORDINGS | memory_mb | cpu_millicores |
 | --- | --- | --- |
 | 1           | 5120  | 3000 |
-| 2           | 6500  | 4500 |
+| 2 (default) | 6500  | 4500 |
 | 3           | 8000  | 6000 |
 | 4           | 9500  | 7500 |
 | 5           | 11000 | 9000 |
-| 6 (default) | 12500 | 10500 |
+| 6           | 12500 | 10500 |
 
 Numbers above include ~3 GB / 2 vCPU baseline for prosody, jicofo,
 jvb, and nginx. The hard upper bound of 6 is baked into the image
