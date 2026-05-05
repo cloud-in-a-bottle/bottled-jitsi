@@ -32,6 +32,8 @@ upstream maintains and tests.
                                        meet.conf           │
                                          ├── /http-bind ─▶ prosody :5280
                                          ├── /xmpp-ws   ─▶ prosody :5280
+                                         ├── /api/recordings/* ─▶ recordings :5060
+                                         ├── /<admin>/...   ─▶ recordings :5060
                                          └── static JS (Jitsi SPA)
                                                           ▲│
                                                    XMPP   ││
@@ -104,12 +106,103 @@ by JVB), not CPU. Bump memory if you expect larger rooms.
   [E2EE](https://jitsi.github.io/handbook/docs/user-guide/e2ee/) in
   the meeting UI if you need peer-to-peer encryption.
 
+## Recording
+
+Server-side recording via **Jibri** (Jitsi Broadcasting
+Infrastructure) bundled into the same container. Click the
+toolbar's overflow menu → **Start recording** → **Record this call**
+in any meeting. A headless Chrome inside the container joins the
+call as an invisible participant, captures audio + video via Xorg's
+dummy driver and ALSA loopback, and ffmpeg-encodes to MP4. When you
+stop recording the file is uploaded to the recordings sidecar and
+deleted from Jibri's working directory.
+
+The browser-side fallback (where the recorder's own browser
+captures the call and uploads the bytes) is also still in place; if
+Jibri is unavailable for some reason the meeting overflow menu's
+local-recording option will work as a backup.
+
+To access recordings, the host needs the **admin URL** that the
+container writes to its logs on startup:
+
+    oh app logs jitsi | grep "recordings listing URL"
+
+The URL has the form `https://<your-jitsi>/_recordings/<admin-token>/`.
+Treat it like a password — anyone with the URL can list, download,
+and delete every recording. The admin token is auto-generated on
+first boot and persists in app data; rotate it by deleting
+`$OPENHOST_APP_DATA_DIR/recordings_admin_token` and restarting.
+
+Disk usage is capped at 5 GiB by default, with oldest-first
+eviction. Tmp uploads-in-progress count against the cap too, so a
+flood of unfinalized uploads can't bypass it.
+
+### Parallel recordings
+
+By default the container runs **six** Jibri instances (the maximum
+baked into the image), so up to six users can record concurrently.
+The seventh simultaneous attempt will fail with "Recording is
+currently unavailable, please try again later". To lower the count,
+set `MAX_PARALLEL_RECORDINGS=N` in the Dockerfile ENV block (or the
+OpenHost `[env]` overrides) where `N` is between 1 and 6, and bump
+``[resources]`` in step (see the sizing table below).
+
+Each Jibri instance consumes roughly **1.5 GB RAM** and **1.5 vCPU**
+while a recording is in flight (Chrome + ffmpeg at 720p30 are
+dominant); when idle, an enabled instance still holds an Xorg +
+chrome warm-up + jibri JVM at ~400 MB. **You must bump `[resources]`
+in `openhost.toml` in step with `MAX_PARALLEL_RECORDINGS`** —
+otherwise extra recordings will OOM-kill chrome mid-session.
+
+| MAX_PARALLEL_RECORDINGS | memory_mb | cpu_millicores |
+| --- | --- | --- |
+| 1           | 5120  | 3000 |
+| 2           | 6500  | 4500 |
+| 3           | 8000  | 6000 |
+| 4           | 9500  | 7500 |
+| 5           | 11000 | 9000 |
+| 6 (default) | 12500 | 10500 |
+
+Numbers above include ~3 GB / 2 vCPU baseline for prosody, jicofo,
+jvb, and nginx. The hard upper bound of 6 is baked into the image
+at build time (see `MAX_JIBRI_INSTANCES` in `patches/apply-patches.sh`).
+There is no runtime cost for instances beyond `MAX_PARALLEL_RECORDINGS`
+— their s6 services self-disable on boot.
+
+When the limit is exceeded, jicofo returns a `service-unavailable`
+error to the requesting client and Jitsi shows the standard error
+toast. There is no built-in queueing.
+
+## Container requirements
+
+Jibri's chrome runs with `--no-sandbox`, which avoids the
+CAP_SYS_ADMIN requirement of chromium's setuid sandbox helper.
+With the sandbox off, the app needs no special Linux capabilities
+or privileged opt-in — only a larger shared-memory segment for
+chrome's renderer:
+
+```toml
+[runtime.container]
+shm_mb = 2048           # Chrome renderer wants >= 2 GiB /dev/shm
+```
+
+The chrome-renderer sandbox is the OS-level layer that protects
+against malicious *web content* attacking the host.  In our case
+chrome only ever navigates to our own jitsi-meet URL, so the
+sandbox doesn't really apply; dropping it lets the app run under
+OpenHost's normal least-privilege defaults instead of needing an
+operator-acknowledged privileged-app opt-in.
+
+Audio for the recording path is routed entirely in user space:
+chrome plays its meeting audio into a pulseaudio virtual sink
+(`jibri-loop`), and ffmpeg captures from that sink's monitor.
+No ALSA device access (`/dev/snd`) is needed.
+
 ## What's not included
 
-- **Jibri** (recording, live-streaming) — requires host kernel ALSA
-  loopback and a headless Chrome per recording; not feasible in
-  OpenHost's one-container-per-app model.
-- **Jigasi** (SIP dial-in) — skipped for v1.
+- **Live streaming** (Jibri RTMP push to YouTube / etc.) — would
+  work in principle but isn't wired up.
+- **Jigasi** (SIP dial-in) — skipped.
 - **External coturn** — if your users are behind restrictive
   firewalls that block outgoing UDP to non-443 ports, they will
   fail to get media through. Deploy a coturn separately and wire it

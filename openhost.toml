@@ -1,11 +1,28 @@
 [app]
 name = "jitsi"
-version = "0.1.0"
-description = "Jitsi Meet video conferencing: XMPP + jicofo + jitsi-videobridge + nginx in one container."
+version = "0.2.0"
+description = "Jitsi Meet video conferencing: XMPP + jicofo + jitsi-videobridge + nginx + jibri (recording) in one container."
 
 [runtime.container]
 image = "Dockerfile"
 port = 80
+# Jibri runs a headless Chrome that captures the meeting; Chrome's
+# renderer needs ~600-800 MiB of /dev/shm per concurrent Chrome
+# (compositor shared-memory) or it OOM-kills mid-recording.  Sized
+# at 4 GiB to comfortably hold MAX_PARALLEL_RECORDINGS=6 Chromes
+# (~600 MiB each, 3.6 GiB working set) with headroom for
+# allocation spikes during high-resolution video bursts.  If you
+# lower MAX_PARALLEL_RECORDINGS, you can lower shm_mb to 2 GiB
+# (3 recorders) without losing reliability.
+#
+# Audio for jibri's recording path is routed entirely through
+# pulseaudio's in-process virtual sink (jibri-loop), so we don't
+# need any ALSA device access (/dev/snd).  Chrome itself runs with
+# --no-sandbox (set in openhost-bootstrap/00-openhost-config.sh),
+# which avoids the CAP_SYS_ADMIN requirement of the setuid sandbox
+# helper, so this app needs no special capabilities or privileged
+# opt-in.
+shm_mb = 4096
 
 # Jitsi Videobridge media port. OpenHost only exposes extra ports in
 # the 9000-9999 range, so we pin JVB_PORT=9500 inside the container
@@ -17,18 +34,20 @@ container_port = 9500
 host_port = 9500
 
 [resources]
-# JVB + Jicofo are JVMs, Prosody is Lua, nginx is tiny. 3 GiB gives
-# everyone headroom for ~10 participants in a single room; bump this
-# if you expect more.
-memory_mb = 3072
-cpu_millicores = 2000
+# Sized for MAX_PARALLEL_RECORDINGS=6 (the upper bound baked into
+# the image): ~3 GiB / 2 vCPU baseline for prosody/jicofo/jvb/
+# nginx, plus ~1.5 GiB + 1.5 vCPU per concurrent Jibri recording.
+# 3 + 6*1.5 = 12 GiB; 2 + 6*1.5 = 11 vCPU; rounded up with margin.
+# See the README's sizing table for lower MAX_PARALLEL_RECORDINGS
+# rows.  Note that ``cpu_millicores`` is a per-container ceiling,
+# not a reservation — values exceeding the host's vCPU count just
+# remove the cap, which on an under-provisioned host degrades
+# encode quality (frame drops, stutter) rather than failing.
+memory_mb = 12500
+cpu_millicores = 10500
 
 [data]
-# Persistent data: generated shared secrets + prosody's flat-file
-# account store (if ever enabled). ~/config/ in the container maps
-# here so the same secrets survive restarts.
 app_data = true
-# Per-boot scratch: nginx cache, prosody runtime logs, JVB temp files.
 app_temp_data = true
 
 [routing]
