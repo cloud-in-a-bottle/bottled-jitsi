@@ -1,6 +1,6 @@
-# openhost-jitsi
+# bottled-jitsi
 
-[Jitsi Meet](https://meet.jit.si/) packaged as an OpenHost app.
+[Jitsi Meet](https://meet.jit.si/) packaged as a Cloud in a Bottle app.
 
 Runs the full Jitsi stack — Prosody (XMPP), Jicofo (focus), Jitsi
 Videobridge (SFU), and Nginx — in a single container supervised by
@@ -56,18 +56,18 @@ Declared in `openhost.toml`:
 
 | Port       | Purpose                                            |
 |------------|----------------------------------------------------|
-| 80/tcp     | Container nginx; OpenHost proxies to it internally |
+| 80/tcp     | Container nginx; Cloud in a Bottle proxies to it internally |
 | 9500/udp   | JVB media; **must be reachable from the internet** |
 
-The 9500 port is in the 9000–9999 range OpenHost permits for extra
+The 9500 port is in the 9000–9999 range Cloud in a Bottle permits for extra
 ports. `JVB_PORT=9500` is set inside the container so Jitsi matches
-what OpenHost publishes on the host. If you change the port, update
+what Cloud in a Bottle publishes on the host. If you change the port, update
 both the manifest `host_port` and the `JVB_PORT` env var and
 redeploy.
 
 ## First-boot hostname discovery
 
-OpenHost does not currently inject the app's public hostname as an
+Cloud in a Bottle does not currently inject the app's public hostname as an
 env var. On first boot, cont-init runs a one-shot HTTP listener on
 port 80 that captures `X-Forwarded-Host` from the first incoming
 request, caches it to `$OPENHOST_APP_DATA_DIR/hostname`, and uses
@@ -94,10 +94,10 @@ by JVB), not CPU. Bump memory if you expect larger rooms.
 
 ## Security notes
 
-- **Anyone with the URL can open a room.** OpenHost's owner-login
+- **Anyone with the URL can open a room.** Cloud in a Bottle's owner-login
   gate is disabled for this app (`public_paths = ["/"]`) because
   participants are typically random people you invited, not
-  OpenHost account holders. If you want to lock it down, enable
+  Cloud in a Bottle account holders. If you want to lock it down, enable
   Jitsi's [secure-domain](https://jitsi.github.io/handbook/docs/devops-guide/secure-domain/)
   mode via `ENABLE_AUTH=1` (not yet exposed as a first-class env var
   in this wrapper — edit the Dockerfile ENV block).
@@ -143,7 +143,7 @@ By default the container runs **two** Jibri instances, so up to two
 users can record concurrently. The third simultaneous attempt will
 fail with "Recording is currently unavailable, please try again
 later". To raise the count, set `MAX_PARALLEL_RECORDINGS=N` in the
-Dockerfile ENV block (or the OpenHost `[env]` overrides) where `N`
+Dockerfile ENV block (or the Cloud in a Bottle `[env]` overrides) where `N`
 is between 1 and 6, and bump ``[resources]`` in step (see the sizing
 table below).
 
@@ -190,7 +190,7 @@ The chrome-renderer sandbox is the OS-level layer that protects
 against malicious *web content* attacking the host.  In our case
 chrome only ever navigates to our own jitsi-meet URL, so the
 sandbox doesn't really apply; dropping it lets the app run under
-OpenHost's normal least-privilege defaults instead of needing an
+Cloud in a Bottle's normal least-privilege defaults instead of needing an
 operator-acknowledged privileged-app opt-in.
 
 Audio for the recording path is routed entirely in user space:
