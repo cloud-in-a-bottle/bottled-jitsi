@@ -60,6 +60,50 @@ echo "$HOSTNAME_VAL" > "$CACHED_HOSTNAME_FILE"
 PUBLIC_URL_VAL="${PUBLIC_URL:-https://$HOSTNAME_VAL}"
 log "PUBLIC_URL=$PUBLIC_URL_VAL hostname=$HOSTNAME_VAL"
 
+# -------------------------------------------------------------- JVB addr
+#
+# JVB needs to advertise a public IP in its SDP ICE candidates so
+# remote browsers can actually open UDP to it. OpenHost gives us a
+# fixed host port (9500/udp from the manifest) but doesn't inject the
+# public IP directly.
+#
+# We must NOT resolve the public hostname to find it: on the pasta
+# podman backend, OpenHost's internal DNS resolves the app hostname to
+# the host gateway (host.containers.internal = 10.200.0.1), which is
+# unroutable from the internet. Advertising that breaks (or at best
+# pollutes) ICE. Instead we read the container's own public interface
+# address — on pasta the container's interface carries the host's
+# public IP directly (e.g. eth0 = the VM's public IP).
+#
+# Priority:
+#   * explicit JVB_ADVERTISE_IPS / JVB_ADVERTISE_IP from the operator
+#   * the container's first global-scope, non-private IPv4
+#   * nothing -> JVB self-discovers its public IP via STUN (the right
+#     fallback when the container only has a private IP behind NAT)
+
+if [[ -z "${JVB_ADVERTISE_IPS:-}" ]]; then
+    if [[ -n "${JVB_ADVERTISE_IP:-}" ]]; then
+        JVB_ADVERTISE_IPS_VAL="$JVB_ADVERTISE_IP"
+    else
+        # First global-scope IPv4 on the container's interfaces, skipping
+        # RFC1918 private / loopback / link-local ranges (so a container
+        # with only a private IP falls through to STUN discovery).
+        PUBLIC_IP="$(ip -4 -o addr show scope global 2>/dev/null \
+            | awk '{print $4}' | cut -d/ -f1 \
+            | grep -vE '^(10\.|127\.|169\.254\.|172\.(1[6-9]|2[0-9]|3[01])\.|192\.168\.)' \
+            | head -1)"
+        if [[ -n "$PUBLIC_IP" ]]; then
+            JVB_ADVERTISE_IPS_VAL="$PUBLIC_IP"
+            log "using container public IP $JVB_ADVERTISE_IPS_VAL for JVB advertising"
+        else
+            JVB_ADVERTISE_IPS_VAL=""
+            log "no public IP on container interfaces; JVB will self-discover via STUN"
+        fi
+    fi
+else
+    JVB_ADVERTISE_IPS_VAL="$JVB_ADVERTISE_IPS"
+fi
+
 # -------------------------------------------------------------- self-loopback
 #
 # Jibri's headless chrome needs to navigate to PUBLIC_URL to join
@@ -176,37 +220,6 @@ if [[ "${ENABLE_RECORDING:-}" == "1" ]]; then
         chmod 600 "$INSTANCE_ID_PREFIX_FILE"
     fi
     OPENHOST_JIBRI_INSTANCE_ID_PREFIX_VAL="$(cat "$INSTANCE_ID_PREFIX_FILE")"
-fi
-
-# -------------------------------------------------------------- JVB addr
-#
-# JVB needs to advertise a public IP in its SDP ICE candidates so
-# remote browsers can actually open UDP to it. OpenHost gives us a
-# fixed host port (9500/udp from the manifest) but doesn't inject the
-# public IP directly. We can either:
-#   * accept an explicit JVB_ADVERTISE_IP env var from the operator
-#   * resolve the public hostname's A record at boot (works because
-#     the OpenHost router and JVB live on the same VM)
-#
-# If neither works, JVB falls back to its built-in STUN-based
-# discovery via stun.l.google.com, which works on most cloud VMs.
-
-if [[ -z "${JVB_ADVERTISE_IPS:-}" ]]; then
-    if [[ -n "${JVB_ADVERTISE_IP:-}" ]]; then
-        JVB_ADVERTISE_IPS_VAL="$JVB_ADVERTISE_IP"
-    else
-        # Resolve the public hostname's A record.
-        RESOLVED="$(getent ahostsv4 "$HOSTNAME_VAL" 2>/dev/null | awk 'NR==1 {print $1}')"
-        if [[ -n "$RESOLVED" ]]; then
-            JVB_ADVERTISE_IPS_VAL="$RESOLVED"
-            log "resolved $HOSTNAME_VAL -> $JVB_ADVERTISE_IPS_VAL for JVB advertising"
-        else
-            JVB_ADVERTISE_IPS_VAL=""
-            log "could not resolve $HOSTNAME_VAL; JVB will self-discover via STUN"
-        fi
-    fi
-else
-    JVB_ADVERTISE_IPS_VAL="$JVB_ADVERTISE_IPS"
 fi
 
 # -------------------------------------------------------------- export
