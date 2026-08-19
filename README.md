@@ -87,10 +87,16 @@ services stay authenticated across restarts.
 
 ## Resource requirements
 
-3 GB RAM / 2 CPUs (set in `openhost.toml`) is comfortable for a
-single room with 5–10 participants at 720p. The dominant cost is
-aggregate outbound bandwidth (~2.5 Mbps per participant, fanned out
-by JVB), not CPU. Bump memory if you expect larger rooms.
+The manifest ships **6.5 GB RAM / 4.5 vCPU** (`openhost.toml`), sized
+for the default `MAX_PARALLEL_RECORDINGS=2` (see the sizing table under
+[Parallel recordings](#parallel-recordings)). Of that, roughly **3 GB /
+2 vCPU** is the conferencing baseline — comfortable for a single room
+with 5–10 participants at 720p — and the remainder covers up to two
+concurrent Jibri recordings. The dominant cost for conferencing is
+aggregate outbound bandwidth (~2.5 Mbps per participant, fanned out by
+JVB), not CPU. Bump `memory_mb`/`cpu_millicores` (in step with
+`MAX_PARALLEL_RECORDINGS`) if you expect larger rooms or more
+concurrent recordings.
 
 ## Security notes
 
@@ -215,5 +221,9 @@ No ALSA device access (`/dev/snd`) is needed.
 
 ## Licensing
 
-Jitsi Meet and its components are Apache 2.0. This wrapper repo is
-distributed under the same license.
+This wrapper repo — the Dockerfile, bootstrap scripts, and the
+recordings sidecar (imbue's original code) — is licensed under the MIT
+License; see [`LICENSE`](LICENSE). The bundled upstream Jitsi Meet
+components (web, prosody, jicofo, jvb, jibri) are pulled from their
+official images at build time and remain under their original Apache
+2.0 license.
