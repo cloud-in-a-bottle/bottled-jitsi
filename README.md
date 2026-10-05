@@ -15,8 +15,9 @@ it on an **amd64** build machine, publish it, and pin the resulting digest in
 `Dockerfile`:
 
 ```sh
-docker build --platform linux/amd64 -f Dockerfile.prebuilt -t "$IMAGE:$VERSION" .
-docker push "$IMAGE:$VERSION"
+podman build --platform linux/amd64 -f Dockerfile.prebuilt -t "$IMAGE:$VERSION" .
+podman push --format=oci --compression-format=zstd --compression-level=3 \
+  --force-compression "$IMAGE:$VERSION"
 # Set Dockerfile's FROM to $IMAGE@sha256:<published-manifest-digest>.
 ```
 
@@ -31,6 +32,11 @@ The PoC registry is `jitsi-poc-registry.1.bottle.cloud`; it permits public pulls
 but denies public writes. Its source is in `poc/registry/`. It retains the
 published image in app data so the branch remains deployable after benchmark
 VMs are deleted. This PoC currently publishes only Linux amd64.
+
+The image uses OCI zstd layers, supported by Cloud in a Bottle's Podman runtime,
+to speed up cold pulls. It contains the same files and runtime settings
+as the original gzip image. The registry disables nginx keep-alive to avoid
+stalled completion of concurrent large-blob responses through the app proxy.
 
 Benchmark methodology and measured results are in `poc/BENCHMARK.md`.
 

@@ -16,3 +16,8 @@ image fail; images already cached on existing instances remain available.
 
 The temporary publishing relay and SSH tunnels are stopped after publishing.
 The public endpoint is read-only even while publishing is taking place.
+
+Keep `keepalive_timeout 0` in nginx: with persistent backend connections,
+concurrent large-blob responses through this instance's app proxy could deliver
+their bytes but stall at the end of the response until the 75-second keep-alive
+timeout. Closing the registry-facing HTTP connection avoids that interaction.

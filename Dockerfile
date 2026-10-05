@@ -1,6 +1,6 @@
 # The expensive upstream assembly is published with Dockerfile.prebuilt.
 # Replace the digest after rebuilding; never use a floating tag for deployment.
-FROM jitsi-poc-registry.1.bottle.cloud/jitsi/prebuilt@sha256:4720bdc301f42485789d972e76e7769c3b335a55358d9867df873a2e83baa280
+FROM jitsi-poc-registry.1.bottle.cloud/jitsi/prebuilt@sha256:e0c094470302cdbb4c3a2550db6752a02d4a3bb3152c9c4e1337c2eb551bd347
 
 # Keep app-owned runtime scripts editable without rebuilding the heavy image.
 # Changes to upstream versions or patches/ require republishing the base.
