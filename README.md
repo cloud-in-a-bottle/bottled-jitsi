@@ -2,6 +2,38 @@
 
 [Jitsi Meet](https://meet.jit.si/) packaged as a Cloud in a Bottle app.
 
+## Prebuilt-image proof of concept
+
+This branch pulls the expensive all-in-one assembly from a registry. Cloud in
+a Bottle still builds `Dockerfile`, but that file only copies the small
+app-owned bootstrap/recording scripts and sets their executable permissions.
+Packages, Chrome, Java, upstream image overlays, and service patches are
+already in the base image. No Cloud in a Bottle changes are required.
+
+`Dockerfile.prebuilt` preserves the original full build for publishers. Build
+it on an **amd64** build machine, publish it, and pin the resulting digest in
+`Dockerfile`:
+
+```sh
+docker build --platform linux/amd64 -f Dockerfile.prebuilt -t "$IMAGE:$VERSION" .
+docker push "$IMAGE:$VERSION"
+# Set Dockerfile's FROM to $IMAGE@sha256:<published-manifest-digest>.
+```
+
+Rebuild and republish when changing upstream versions, package dependencies,
+`patches/`, or baked runtime defaults. Bootstrap/recording script changes only
+need the normal app rebuild. To override an inherited environment default
+without republishing, add an `ENV` instruction to the small `Dockerfile`.
+Secrets and hostname discovery remain first-boot operations, using each
+instance's own persistent app data.
+
+The PoC registry is `jitsi-poc-registry.1.bottle.cloud`; it permits public pulls
+but denies public writes. Its source is in `poc/registry/`. It retains the
+published image in app data so the branch remains deployable after benchmark
+VMs are deleted. This PoC currently publishes only Linux amd64.
+
+Benchmark methodology and measured results are in `poc/BENCHMARK.md`.
+
 Runs the full Jitsi stack — Prosody (XMPP), Jicofo (focus), Jitsi
 Videobridge (SFU), and Nginx — in a single container supervised by
 [s6-overlay](https://github.com/just-containers/s6-overlay). The

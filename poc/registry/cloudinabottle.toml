@@ -1,0 +1,19 @@
+[app]
+name = "jitsi-poc-registry"
+version = "0.1.0"
+description = "Read-only public registry for the Jitsi prebuilt-image proof of concept."
+
+[runtime.container]
+image = "Dockerfile"
+port = 80
+
+[resources]
+memory_mb = 512
+cpu_millicores = 1000
+
+[data]
+app_data = true
+
+[routing]
+health_check = "/v2/"
+public_paths = ["/v2/"]
