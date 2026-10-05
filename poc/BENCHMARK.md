@@ -40,7 +40,7 @@ and microphone input, disable Jitsi P2P mode, join the same room, and check that
 the Jitsi Videobridge peer connection connects and receives media. This checks
 the conferencing backend rather than just the landing page.
 
-## Results — 2026-10-05
+## Initial gzip-image results — 2026-10-05
 
 All times are seconds from the deployment request. Two independent cold VMs
 per path; this is a small PoC sample, not a statistical performance study.
@@ -122,7 +122,7 @@ bottle app deploy --name jitsi \
 
 # On a different, cold instance:
 bottle app deploy --name jitsi \
-  https://github.com/cloud-in-a-bottle/bottled-jitsi@andrew/jitsi-prebuilt-image-poc
+  https://github.com/cloud-in-a-bottle/bottled-jitsi@5a1379d8266d543abbec5000e30249428fa5d80c
 ```
 
 For timing, start a monotonic clock before deployment and poll the app's `/`,
@@ -131,3 +131,109 @@ alone is insufficient: `/` initially serves the hostname-discovery listener.
 Check the real Jitsi HTML and the Prosody response before stopping the clock.
 Use the container logs for bridge and recording-worker registration times.
 Run a three-participant call with P2P disabled to verify actual bridge media.
+
+## Follow-up: where the 31 seconds went
+
+The initial 31.1 s result is a **cold installation-to-ready** measurement,
+including cloning and installing the image, not an existing container's boot
+time. In the first cold-pull run the container started about 27 s after the
+deployment request; the frontend was ready roughly 4 s after that.
+
+Additional measurements on a fresh CPX41 (`jitsi-img-1005-profile`), after its
+default apps settled:
+
+| Operation | Observed time |
+| --- | ---: |
+| First install with the base image already pulled | 9.808 s |
+| Start an existing, stopped container: frontend + BOSH | 1.761 s |
+| Same start: operational videobridge and JVB health HTTP 200 | 6.503 s |
+
+The cached-image installation still includes repository cloning, the small
+Dockerfile build, container creation, and fresh app data. The stopped-container
+test retains its app data and excludes the preceding stop operation. Its clock
+starts before the SSH command that invokes `podman start`; bridge readiness is
+sampled through SSH. These are different operations from a cold deployment.
+
+### Registry streaming stall
+
+The follow-up exposed a second issue: with nginx keep-alive enabled, concurrent
+large-blob responses through this instance's app proxy could stall at their
+tail. A standalone cold `podman pull` took **93.762 s**, with its first tar
+application delayed until **75.403 s**. A separate download-only probe fetched
+the payload quickly but timed out waiting for streamed responses to finish.
+
+Setting `keepalive_timeout 0` on the PoC registry's nginx avoided this behavior:
+
+- Download and SHA-256 verification of all 62 gzip layers, without extraction
+  or disk writes: **3.222 s** for **1,035,332,648 bytes**.
+- Full cold pulls into distinct, empty Podman storage roots: **20.470 s** and
+  **20.751 s**.
+- The fix survived rebuilding/restarting the registry. A subsequent complete
+  download/verification of the zstd image finished in **3.375 s**.
+
+This is a registry-side workaround for the connection-lifetime interaction;
+the Cloud in a Bottle platform code was not changed. It removes the observed
+long stalls, but does not account for the entire original 31 s result: the
+non-stalled image download/unpack/register path is itself substantial.
+
+### zstd image layers
+
+Re-published the same image using OCI zstd layers (level 3) and changed the
+branch's digest pin. The compressed transfer size is now **944,458,959 bytes**
+instead of 1,035,332,648 bytes. Both manifests reference the exact same image
+configuration digest, `sha256:491ab972d31a6dff090e224cab86f1c39b3706be40d8b29e84f7695b09860e2e`,
+which includes the uncompressed layer digests and runtime configuration.
+This changes packaging, not the Jitsi files/features.
+
+| Cold pull + unpack + register | Run 1 | Run 2 | Mean |
+| --- | ---: | ---: | ---: |
+| gzip | 20.470 s | 20.751 s | 20.610 s |
+| zstd | 14.980 s | 14.219 s | 14.600 s |
+
+Each command used a new empty `--root` and `--runroot` on the same profiling
+VM, with no image reuse. Order was gzip, zstd, zstd, gzip; host OS caches were
+not dropped. These are **cold image-storage tests**, not four independently
+fresh VMs. Downloads and extraction overlap, so the download-only number
+cannot be subtracted to obtain an exact extraction phase time.
+
+The new pinned registry manifest is
+`sha256:e0c094470302cdbb4c3a2550db6752a02d4a3bb3152c9c4e1337c2eb551bd347`.
+
+### Fresh-VM verification of the updated branch
+
+One additional fresh CPX41 (`jitsi-img-1005-profile2`) deployed Jitsi commit
+`7e452bb4d09b5d888269fd42d520cac1772ed6f2`, with no Jitsi image cache:
+
+| Milestone | Seconds from deployment request |
+| --- | ---: |
+| Deploy accepted (clone finished) | 8.200 |
+| Platform running | 23.985 |
+| Frontend + BOSH ready | **25.283** |
+| Videobridge registered | 27.5 |
+| Both recording workers available | 56.8 |
+
+This fresh install is about 19% faster than the original 31.1 s gzip average,
+despite its clone/accept phase taking 8.2 s rather than the previous 3–4 s.
+After acceptance, frontend readiness took 17.1 s. It is one fresh-VM sample;
+the repeated cold-storage pull tests above isolate the packaging improvement
+more directly than comparing these totals.
+
+The updated image passed another three-client, P2P-disabled audio/video call.
+All clients had connected JVB peer connections and nonzero inbound audio and
+video, with no API errors. JVB health returned 200, one bridge was operational,
+and both Jibri workers were available. Runtime image configuration matched the
+original gzip image exactly.
+
+Both profiling VMs ran Cloud in a Bottle
+`1d5ab2ee1d28497979cbb393f1a1a2ab85fac7c6`. The registry instance runs
+`367a5eaf4db61c41ef46bda35b694d62503a8037`; its platform code was not modified.
+Public registry writes remained blocked after the nginx change and restart.
+
+For the updated image, deploy
+`https://github.com/cloud-in-a-bottle/bottled-jitsi@andrew/jitsi-prebuilt-image-poc`.
+The original gzip digest remains available for reproducing the initial runs.
+
+Both additional profiling VMs were torn down and verified `terminated` in
+vm-manager. The publishing relay and SSH tunnels were stopped. The read-only
+registry retains the gzip and zstd images (approximately 2 GB combined
+compressed layer payload) for the branch and benchmark reproducibility.
