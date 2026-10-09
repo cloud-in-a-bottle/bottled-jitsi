@@ -2,6 +2,20 @@
 
 [Jitsi Meet](https://meet.jit.si/) packaged as a Cloud in a Bottle app.
 
+## Prebuilt image
+
+Building the combined Jitsi image takes minutes, so installs do not build it.
+On every push to `main`, `.github/workflows/image.yml` builds
+`Dockerfile.prebuilt` and publishes it with zstd layers to
+`ghcr.io/cloud-in-a-bottle/bottled-jitsi` as `:latest` and `:<commit-sha>`.
+The `Dockerfile` that `cloudinabottle.toml` points at is a single
+`FROM ghcr.io/cloud-in-a-bottle/bottled-jitsi:latest`, so installing the app
+pulls the published image. Pull requests build the image without publishing.
+
+Edit `Dockerfile.prebuilt` and the files it copies (`patches/`,
+`openhost-bootstrap/`, `recordings/`) as before; changes reach installs once
+they are merged and the workflow finishes.
+
 Runs the full Jitsi stack — Prosody (XMPP), Jicofo (focus), Jitsi
 Videobridge (SFU), and Nginx — in a single container supervised by
 [s6-overlay](https://github.com/just-containers/s6-overlay). The
@@ -106,7 +120,7 @@ concurrent recordings.
   Cloud in a Bottle account holders. If you want to lock it down, enable
   Jitsi's [secure-domain](https://jitsi.github.io/handbook/docs/devops-guide/secure-domain/)
   mode via `ENABLE_AUTH=1` (not yet exposed as a first-class env var
-  in this wrapper — edit the Dockerfile ENV block).
+  in this wrapper — edit the `Dockerfile.prebuilt` ENV block).
 - Media (DTLS-SRTP over UDP/9500) is end-to-end encrypted between
   browsers and JVB. JVB sees plaintext (SFU semantics). Turn on
   [E2EE](https://jitsi.github.io/handbook/docs/user-guide/e2ee/) in
@@ -149,7 +163,7 @@ By default the container runs **two** Jibri instances, so up to two
 users can record concurrently. The third simultaneous attempt will
 fail with "Recording is currently unavailable, please try again
 later". To raise the count, set `MAX_PARALLEL_RECORDINGS=N` in the
-Dockerfile ENV block (or the Cloud in a Bottle `[env]` overrides) where `N`
+`Dockerfile.prebuilt` ENV block (or the Cloud in a Bottle `[env]` overrides) where `N`
 is between 1 and 6, and bump ``[resources]`` in step (see the sizing
 table below).
 
@@ -221,7 +235,7 @@ No ALSA device access (`/dev/snd`) is needed.
 
 ## Licensing
 
-This wrapper repo — the Dockerfile, bootstrap scripts, and the
+This wrapper repo — the Dockerfiles, bootstrap scripts, and the
 recordings sidecar (imbue's original code) — is licensed under the MIT
 License; see [`LICENSE`](LICENSE). The bundled upstream Jitsi Meet
 components (web, prosody, jicofo, jvb, jibri) are pulled from their

@@ -4,6 +4,8 @@ version = "0.2.0"
 description = "Jitsi Meet video conferencing: XMPP + jicofo + jitsi-videobridge + nginx + jibri (recording) in one container."
 
 [runtime.container]
+# A one-line Dockerfile that pulls ghcr.io/cloud-in-a-bottle/bottled-jitsi:latest,
+# published from main by CI. The full build lives in Dockerfile.prebuilt.
 image = "Dockerfile"
 port = 80
 # Jibri runs a headless Chrome that captures the meeting; Chrome's
