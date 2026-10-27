@@ -7,8 +7,9 @@
 # and nginx all come up in the same container under the existing
 # s6-overlay + tpl templating machinery.
 #
-# We target the `stable-9955` release tag. This matches the upstream
-# jitsi-meet Debian package versions (1.0.9955+).
+# We target the `stable-9955` release tag. The Debian packages come from
+# the jitsi stable apt repo that image ships with, pinned below to the
+# versions it resolves to (jitsi-meet-web 1.0.9442-1 at the time of pinning).
 #
 # Why not install the Debian packages ourselves (as the earlier
 # version of this app did)?  Because the upstream `jitsi-meet-prosody`
@@ -18,14 +19,17 @@
 # correctly (see prosody/rootfs/defaults/conf.d/jitsi-meet.cfg.lua
 # line 77 and prosody/rootfs/defaults/prosody.cfg.lua line 154).
 
-ARG JITSI_TAG=stable-9955
+# Every jitsi image is pinned to the stable-9955 tag *and* its multi-arch
+# index digest, so a re-pointed tag can't change what we build. The digest is
+# what's enforced (a tag next to a digest is ignored), so a bump changes both
+# on every line below, including the base-java FROM.
 
 # Named stages we'll COPY rootfs trees from.
-FROM jitsi/web:${JITSI_TAG} AS web-src
-FROM jitsi/prosody:${JITSI_TAG} AS prosody-src
-FROM jitsi/jicofo:${JITSI_TAG} AS jicofo-src
-FROM jitsi/jvb:${JITSI_TAG} AS jvb-src
-FROM jitsi/jibri:${JITSI_TAG} AS jibri-src
+FROM docker.io/jitsi/web:stable-9955@sha256:23458904c9e9ff391df42567a3e667710754c584ab77db7abfe432a6ebd0fcec AS web-src
+FROM docker.io/jitsi/prosody:stable-9955@sha256:27d5f83b1989a7fc699e40f16b1d97e45be5c22507dc5e56eca59f80f106e385 AS prosody-src
+FROM docker.io/jitsi/jicofo:stable-9955@sha256:473e7994018d61d29cf296ef6bca03c6ac71ae697a15e3ecff5d39cc569e7a39 AS jicofo-src
+FROM docker.io/jitsi/jvb:stable-9955@sha256:9f57b4bd09a94e68a57bba6c30070cca801cd8e9466e31bc7361e081cc625980 AS jvb-src
+FROM docker.io/jitsi/jibri:stable-9955@sha256:893ea6eca8966dccea5d3e6745b2f8aae7f2906cb995ebe798a63e6e52b00c93 AS jibri-src
 
 # Final image inherits from jitsi/base-java which already has:
 #   * s6-overlay v1 at /init (stage-2 init: cont-init.d -> services.d)
@@ -34,7 +38,7 @@ FROM jitsi/jibri:${JITSI_TAG} AS jibri-src
 #   * the jitsi/stable apt repo + debian bookworm-backports
 #   * openjdk-17 (needed for jicofo + jvb)
 #   * a cont-init that sets /etc/localtime from TZ
-FROM jitsi/base-java:${JITSI_TAG}
+FROM docker.io/jitsi/base-java:stable-9955@sha256:1f6fffad46626745365b01d6ad41786f35ccd9884a8a51508e3aead1f10fca3d
 
 ARG DEBIAN_FRONTEND=noninteractive
 
@@ -50,6 +54,11 @@ ARG DEBIAN_FRONTEND=noninteractive
 # docker-jitsi-meet templates drop fresh configs into /config at boot
 # and we don't want the postinst-generated /etc/prosody cluttering
 # things up.
+#
+# Packages from the third-party jitsi and prosody.im apt repos are pinned to
+# exact versions (what these repos resolve to for the images above), so a new
+# upstream package can't slip into a rebuild. Bump them together with the
+# image digests.
 
 RUN curl -sSL https://prosody.im/files/prosody-debian-packages.key | \
         gpg --dearmor -o /usr/share/keyrings/prosody.gpg && \
@@ -60,13 +69,13 @@ RUN apt-dpkg-wrap apt-get update && \
     apt-dpkg-wrap apt-get install -y --no-install-recommends \
         dnsutils cron socat curl jq nginx-extras \
         python3 openssl \
-        jitsi-meet-web \
-        lua5.4 prosody \
+        jitsi-meet-web=1.0.9442-1 \
+        lua5.4 prosody=13.0.7-1~bookworm2 \
         lua-cyrussasl lua-inspect lua-ldap lua-luaossl lua-sec lua-unbound \
         libldap-common sasl2-bin libsasl2-modules-ldap \
-        jicofo \
-        jitsi-videobridge2 iproute2 libpcap0.8 \
-        jibri \
+        jicofo=1.0-1205-1 \
+        jitsi-videobridge2=2.3-318-gbf271b11f-1 iproute2 libpcap0.8 \
+        jibri=8.0-235-g87bcd3c-1 \
         libgl1-mesa-dri pulseaudio dbus dbus-x11 rtkit \
         unzip fonts-noto fonts-noto-cjk libcap2-bin \
         xserver-xorg-core xserver-xorg-video-dummy \
@@ -84,7 +93,7 @@ RUN apt-dpkg-wrap apt-get update && \
 # package's postinst (which assumes an interactive debconf run and
 # an already-working prosody). Matches what jitsi/prosody does.
 RUN apt-dpkg-wrap apt-get update && \
-    apt-dpkg-wrap apt-get -d install -y jitsi-meet-prosody && \
+    apt-dpkg-wrap apt-get -d install -y jitsi-meet-prosody=1.0.9442-1 && \
     dpkg -x /var/cache/apt/archives/jitsi-meet-prosody*.deb /tmp/pkg && \
     rm -f /tmp/pkg/usr/share/jitsi-meet/prosody-plugins/mod_smacks.lua && \
     mv /tmp/pkg/usr/share/jitsi-meet/prosody-plugins /prosody-plugins && \
