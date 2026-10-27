@@ -219,6 +219,7 @@ COPY openhost-bootstrap/00-openhost-config.sh /etc/cont-init.d/00-openhost-confi
 COPY recordings/server.py /opt/openhost-recordings/server.py
 COPY recordings/recordings-init.sh /etc/cont-init.d/14-recordings-init
 COPY recordings/recording-upload.js /usr/share/jitsi-meet/static/openhost-recordings.js
+COPY recordings/body.html /usr/share/jitsi-meet/body.html
 COPY recordings/jibri-finalize.sh /opt/openhost-recordings/jibri-finalize.sh
 
 RUN chmod +x /etc/cont-init.d/* /opt/openhost-jitsi/*.sh /opt/openhost-recordings/jibri-finalize.sh /etc/services.d/*/run 2>/dev/null || true
@@ -240,7 +241,7 @@ ENV DISABLE_HTTPS=1 \
     ENABLE_HTTP_REDIRECT=0 \
     ENABLE_IPV6=0 \
     XMPP_SERVER=127.0.0.1 \
-    XMPP_BOSH_URL_BASE=http://127.0.0.1:5999 \
+    XMPP_BOSH_URL_BASE=http://127.0.0.1:5280 \
     DISABLE_COLIBRI_WEBSOCKET_JVB_LOOKUP=1 \
     ENABLE_COLIBRI_WEBSOCKET=0 \
     ENABLE_XMPP_WEBSOCKET=0 \
