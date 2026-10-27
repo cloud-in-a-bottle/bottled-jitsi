@@ -13,7 +13,7 @@ def _app_copy_built_from_source(dest: Path) -> Path:
     """Copies the working tree (minus gitignored files) to ``dest``, with Dockerfile.prebuilt as its Dockerfile.
 
     The deployed Dockerfile only pulls the image main last published, so testing it would test main, not this
-    branch: a change to Dockerfile.prebuilt (eg a JITSI_TAG bump) or to the files it copies would go untested.
+    branch: a change to Dockerfile.prebuilt (eg a jitsi image bump) or to the files it copies would go untested.
     """
     listing = subprocess.run(
         ["git", "ls-files", "--cached", "--others", "--exclude-standard", "-z"],
