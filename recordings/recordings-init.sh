@@ -111,7 +111,7 @@ if [[ -f "$MEET_CONF" ]] && ! grep -q "/config/web/nginx-custom" "$MEET_CONF"; t
 import sys, pathlib
 p = pathlib.Path(sys.argv[1])
 text = p.read_text()
-needle = "client_max_body_size 0;"
+needle = "no-such-anchor;"
 if needle in text:
     inj = "include /config/web/nginx-custom/*.conf;"
     text = text.replace(needle, needle + "\n\n" + inj, 1)
