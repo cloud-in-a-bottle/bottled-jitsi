@@ -1,240 +1,219 @@
 # Jitsi Meet — all-in-one container.
 #
-# Approach: take the four *official* Jitsi Docker images (jitsi/web,
-# jitsi/prosody, jitsi/jicofo, jitsi/jvb), install their Debian
-# packages into one combined image, and overlay the official
-# rootfs/ config templates from each image so prosody, jicofo, jvb
-# and nginx all come up in the same container under the existing
-# s6-overlay + tpl templating machinery.
+# Approach: take the *official* Jitsi Docker images (ghcr.io/jitsi/web,
+# prosody, jicofo, jvb, jibri), install their Debian packages into one
+# combined image built on ghcr.io/jitsi/base-java, and copy each image's
+# config templates (/defaults) and s6-overlay v3 service definitions in, so
+# prosody, jicofo, jvb, nginx and jibri all come up in one container from
+# the same templates and scripts upstream ships and tests.
 #
-# We target the `stable-9955` release tag. The Debian packages come from
-# the jitsi stable apt repo that image ships with, pinned below to the
-# versions it resolves to (jitsi-meet-web 1.0.9442-1 at the time of pinning).
+# We target the `stable-11248-1` release tag. The Debian packages come from
+# the jitsi stable apt repo (and packages.prosody.im for prosody), pinned
+# below to the versions installed in that release's images.
 #
-# Why not install the Debian packages ourselves (as the earlier
-# version of this app did)?  Because the upstream `jitsi-meet-prosody`
-# postinst script doesn't set `http_default_host` or
-# `trusted_proxies` on prosody, which makes BOSH / XMPP-WS return 404
-# when proxied from nginx. The docker-image templates DO set these
-# correctly (see prosody/rootfs/defaults/conf.d/jitsi-meet.cfg.lua
-# line 77 and prosody/rootfs/defaults/prosody.cfg.lua line 154).
+# Since stable-11146 upstream runs every service as the unprivileged `s6`
+# user (uid 1000) on a read-only root with a tmpfs /run. Cloud in a Bottle
+# bind-mounts the app data dir idmapped to container root, so this image
+# keeps s6-overlay running as root: our cont-init scripts (bootstrap,
+# recordings, jibri) run as root, and every upstream service and config
+# oneshot is started as `s6` (see patches/apply-patches.sh).
 
-# Every jitsi image is pinned to the stable-9955 tag *and* its multi-arch
+# Every jitsi image is pinned to the stable-11248-1 tag *and* its multi-arch
 # index digest, so a re-pointed tag can't change what we build. The digest is
 # what's enforced (a tag next to a digest is ignored), so a bump changes both
-# on every line below, including the base-java FROM.
+# on every line below, including the base-java FROM. Upstream publishes to
+# GHCR only since stable-11146 (jitsi/docker-jitsi-meet#2271).
 
-# Named stages we'll COPY rootfs trees from.
-FROM docker.io/jitsi/web:stable-9955@sha256:23458904c9e9ff391df42567a3e667710754c584ab77db7abfe432a6ebd0fcec AS web-src
-FROM docker.io/jitsi/prosody:stable-9955@sha256:27d5f83b1989a7fc699e40f16b1d97e45be5c22507dc5e56eca59f80f106e385 AS prosody-src
-FROM docker.io/jitsi/jicofo:stable-9955@sha256:473e7994018d61d29cf296ef6bca03c6ac71ae697a15e3ecff5d39cc569e7a39 AS jicofo-src
-FROM docker.io/jitsi/jvb:stable-9955@sha256:9f57b4bd09a94e68a57bba6c30070cca801cd8e9466e31bc7361e081cc625980 AS jvb-src
-FROM docker.io/jitsi/jibri:stable-9955@sha256:893ea6eca8966dccea5d3e6745b2f8aae7f2906cb995ebe798a63e6e52b00c93 AS jibri-src
+# Named stages we'll COPY templates, scripts and binaries from.
+FROM ghcr.io/jitsi/web:stable-11248-1@sha256:12980b5e55eba7b0543a8030910ae60736aa3fdf777d4c3c58348bc6af917f43 AS web-src
+FROM ghcr.io/jitsi/prosody:stable-11248-1@sha256:ccd795568ab4096edb624ca53490f2d8702ac16622df37a391dc29f664f24710 AS prosody-src
+FROM ghcr.io/jitsi/jicofo:stable-11248-1@sha256:470a471e052d7d5e8b62b2ccab2b639d3e5e0b3344388439fb3ec8cd8c441e86 AS jicofo-src
+FROM ghcr.io/jitsi/jvb:stable-11248-1@sha256:d2f546c8e11e6fb77285df854b0d131aab04dcaf98da946a9d16b2f03b86badb AS jvb-src
+FROM ghcr.io/jitsi/jibri:stable-11248-1@sha256:b0ccc0133a9c6289797a34666fdef4c987f851727cb4d750e768781f08a2a94e AS jibri-src
 
 # Final image inherits from jitsi/base-java which already has:
-#   * s6-overlay v1 at /init (stage-2 init: cont-init.d -> services.d)
-#   * /usr/bin/tpl template renderer (jitsi/tpl v1.4.0)
-#   * /usr/bin/{apt-dpkg-wrap,apt-cleanup} helper wrappers
-#   * the jitsi/stable apt repo + debian bookworm-backports
-#   * openjdk-17 (needed for jicofo + jvb)
-#   * a cont-init that sets /etc/localtime from TZ
-FROM docker.io/jitsi/base-java:stable-9955@sha256:1f6fffad46626745365b01d6ad41786f35ccd9884a8a51508e3aead1f10fca3d
+#   * Debian trixie
+#   * s6-overlay v3 at /init (base bundle incl. legacy cont-init.d, then the
+#     s6-rc `user` bundle, then legacy services.d)
+#   * /usr/bin/tpl template renderer (jitsi/tpl v1.5.0)
+#   * /usr/bin/{apt-dpkg-wrap,apt-cleanup,check-writable,setup-custom-ca}
+#   * the jitsi/stable apt repo + debian trixie-backports
+#   * openjdk-21 (needed for jicofo, jvb and jibri)
+#   * the unprivileged `s6` user every service runs as
+FROM ghcr.io/jitsi/base-java:stable-11248-1@sha256:b2b6a189edb3396c8d525f8640bce1984c9a339a2cf9044af7f950282d4220a9
 
+USER root
 ARG DEBIAN_FRONTEND=noninteractive
 
 # ---------------------------------------------------------------- packages
 #
-# Add the prosody.im apt repo (prosody's default Debian package is too
-# old for Jitsi 13; the official jitsi/prosody image installs from this
-# repo and we match), then install every runtime daemon in one layer
-# so each package's postinst creates its users and groups correctly.
-#
-# jitsi-meet-prosody's postinst is run only to pull in the plugin
-# bundle; we immediately clear /etc/prosody afterwards since the
-# docker-jitsi-meet templates drop fresh configs into /config at boot
-# and we don't want the postinst-generated /etc/prosody cluttering
-# things up.
+# The prosody.im apt repo (trixie suite) and its signing key, exactly as the
+# jitsi/prosody image ships them.
+COPY --from=prosody-src /etc/apt/sources.list.d/prosody.sources /etc/apt/sources.list.d/prosody.sources
+COPY --from=prosody-src /usr/share/keyrings/prosody.gpg /usr/share/keyrings/prosody.gpg
+
+# One layer with every runtime daemon, so each package's postinst creates its
+# users and groups correctly. The lists mirror the upstream Dockerfiles
+# (web, prosody, jicofo, jvb, jibri) minus what we don't run (acme.sh, the
+# autoscaler sidecar, rclone, upload integrations), plus python3 for our
+# bootstrap and recordings sidecar.
 #
 # Packages from the third-party jitsi and prosody.im apt repos are pinned to
-# exact versions (what these repos resolve to for the images above), so a new
+# exact versions (what the stable-11248-1 images have installed), so a new
 # upstream package can't slip into a rebuild. Bump them together with the
 # image digests.
-
-RUN curl -sSL https://prosody.im/files/prosody-debian-packages.key | \
-        gpg --dearmor -o /usr/share/keyrings/prosody.gpg && \
-    echo "deb [signed-by=/usr/share/keyrings/prosody.gpg] https://packages.prosody.im/debian bookworm main" \
-        > /etc/apt/sources.list.d/prosody.list
-
-RUN apt-dpkg-wrap apt-get update && \
-    apt-dpkg-wrap apt-get install -y --no-install-recommends \
-        dnsutils cron socat curl jq nginx-extras \
-        python3 openssl \
-        jitsi-meet-web=1.0.9442-1 \
-        lua5.4 prosody=13.0.7-1~bookworm2 \
-        lua-cyrussasl lua-inspect lua-ldap lua-luaossl lua-sec lua-unbound \
-        libldap-common sasl2-bin libsasl2-modules-ldap \
-        jicofo=1.0-1205-1 \
-        jitsi-videobridge2=2.3-318-gbf271b11f-1 iproute2 libpcap0.8 \
-        jibri=8.0-235-g87bcd3c-1 \
-        libgl1-mesa-dri pulseaudio dbus dbus-x11 rtkit \
-        unzip fonts-noto fonts-noto-cjk libcap2-bin \
-        xserver-xorg-core xserver-xorg-video-dummy \
-        x11-xserver-utils icewm procps \
-        libatk1.0-0 libatk-bridge2.0-0 libcups2 libxcomposite1 \
-        libxdamage1 libxfixes3 libxrandr2 libgbm1 libxkbcommon0 \
-        libpangocairo-1.0-0 libpango-1.0-0 libcairo2 libnss3 \
-        libnspr4 libdrm2 libasound2 libgtk-3-0 libdbus-1-3 \
-        ca-certificates xdg-utils && \
-    apt-cleanup && \
-    rm -rf /var/lib/apt/lists/* && \
-    adduser jibri rtkit
-
-# Pull jitsi-meet-prosody's plugin bundle without running the
-# package's postinst (which assumes an interactive debconf run and
-# an already-working prosody). Matches what jitsi/prosody does.
-RUN apt-dpkg-wrap apt-get update && \
-    apt-dpkg-wrap apt-get -d install -y jitsi-meet-prosody=1.0.9442-1 && \
-    dpkg -x /var/cache/apt/archives/jitsi-meet-prosody*.deb /tmp/pkg && \
-    rm -f /tmp/pkg/usr/share/jitsi-meet/prosody-plugins/mod_smacks.lua && \
-    mv /tmp/pkg/usr/share/jitsi-meet/prosody-plugins /prosody-plugins && \
-    rm -rf /tmp/pkg /var/cache/apt/archives/*.deb /var/lib/apt/lists/* && \
-    mkdir -p /prosody-plugins-custom /prosody-plugins-contrib && \
-    chown -R prosody:prosody /prosody-plugins /prosody-plugins-custom /prosody-plugins-contrib
-
-# The apt-installed /etc/prosody/*.cfg.lua files are a red herring:
-# our boot-time cont-init renders fresh configs into /config/prosody/
-# from the docker-image templates and points prosody at those via
-# --config. But we keep /etc/prosody itself around because prosodyctl
-# looks for some helper files there. Just clear out the VirtualHost
-# definitions to make sure they don't accidentally leak into prosody's
-# state.
-RUN rm -rf /etc/prosody/conf.avail /etc/prosody/conf.d /etc/prosody/prosody.cfg.lua && \
-    rm -f /etc/nginx/sites-enabled/default && \
-    rm -rf /etc/nginx/conf.d/*
-
-# ---------------------------------------------------------------- luarocks bits
 #
-# The prosody image builds a few lua modules (basexx, lua-cjson,
-# net-url) from luarocks in a separate builder stage. We copy the
-# result straight out of jitsi/prosody rather than rebuilding.
+# lua-inspect: stable-11248-1's prosody image dropped it, but the bundled
+# prosody plugins still `require "inspect"` (mod_auth_token fails to load
+# without it; jitsi/docker-jitsi-meet#2346, reverted in stable-11248-2). We
+# keep installing it.
+RUN apt-dpkg-wrap apt-get update && \
+    apt-dpkg-wrap apt-get install -y \
+        `# web` \
+        dnsutils jq nginx-extras socat \
+        jitsi-meet-web=1.0.9442-1 \
+        `# prosody` \
+        lua5.4 prosody=13.0.7-1~trixie2 \
+        libldap-common sasl2-bin libsasl2-modules-ldap \
+        lua-cyrussasl lua-inspect lua-ldap lua-luaossl lua-sec lua-unbound \
+        `# jicofo` \
+        jicofo=1.0-1205-1 \
+        `# jvb` \
+        curl iproute2 libpcap0.8 \
+        jitsi-videobridge2=2.3-318-gbf271b11f-1 \
+        `# jibri (chrome comes from the jibri image below)` \
+        jibri=8.0-235-g87bcd3c-1 \
+        dbus dbus-x11 fonts-noto fonts-noto-cjk \
+        libatk-bridge2.0-0 libatk1.0-0 libatspi2.0-0 libcap2-bin \
+        libgl1-mesa-dri libgtk-3-0 procps pulseaudio rtkit unzip \
+        `# ours` \
+        python3 openssl && \
+    apt-cleanup
 
+# Filesystem tweaks the upstream Dockerfiles make after installing.
+RUN set -eux; \
+    # prosody: upstream patches prosody 13 to skip IDNA domain verification
+    # (jitsi/docker-jitsi-meet#2197) and gives the s6 user its data dir.
+    grep -q idna_to_ascii /usr/share/lua/5.4/prosody/util/jid.lua; \
+    sed -i '/idna_to_ascii/d' /usr/share/lua/5.4/prosody/util/jid.lua; \
+    rm -rf /etc/prosody; \
+    chown s6:s6 /var/lib/prosody /var/run/saslauthd; \
+    echo "TLS_REQCERT allow" >> /etc/ldap/ldap.conf; \
+    # web: interface_config.js is served from /run/web/config, rendered from
+    # the copy in /defaults (taken from the web image below)
+    rm /usr/share/jitsi-meet/interface_config.js; \
+    ln -s /run/web/.well-known /usr/share/jitsi-meet/.well-known; \
+    rm -f /etc/nginx/conf.d/default.conf /etc/nginx/sites-enabled/default; \
+    rm -rf /var/lib/nginx && ln -s /run/web/tmp /var/lib/nginx; \
+    # jibri: config is rendered into /run/jibri/config at boot
+    rm -rf /etc/jitsi/jibri && ln -s /run/jibri/config /etc/jitsi/jibri; \
+    rm -rf /var/log/jitsi/jibri && ln -s /storage/logs /var/log/jitsi/jibri; \
+    rm -rf /home/jibri; \
+    # shared
+    usermod -a -G prosody,sasl,audio,jibri,jitsi,rtkit,video s6; \
+    mkdir -p /storage /config; \
+    chown s6:s6 /storage
+
+# ---------------------------------------------------------------- prosody
+#
+# luarocks modules (basexx, lua-cjson, net-url) built in the prosody image's
+# builder stage, and the plugin trees it assembles: jitsi-meet-prosody's
+# plugins plus upstream's vendored ones (mod_http_health, which
+# register-setup polls), the matrix plugin, and jitsi-contrib's plugins.
 COPY --from=prosody-src /usr/local/lib/lua/5.4/   /usr/local/lib/lua/5.4/
 COPY --from=prosody-src /usr/local/share/lua/5.4/ /usr/local/share/lua/5.4/
+COPY --from=prosody-src /prosody-plugins/         /prosody-plugins/
+COPY --from=prosody-src /prosody-plugins-contrib/ /prosody-plugins-contrib/
+COPY --from=prosody-src /defaults/                /defaults/
+COPY --from=prosody-src /etc/sasl/                /etc/sasl/
+RUN mkdir -p /prosody-plugins-custom
 
-# ---------------------------------------------------------------- rootfs overlay
+# ---------------------------------------------------------------- jicofo, jvb
 #
-# Copy the official /defaults, /etc/cont-init.d, /etc/services.d
-# trees. The colliding 10-config names get renamed so s6 runs them
-# all, in a deterministic order (prosody first -- it registers users
-# and mints certs the other services depend on).
+# logging.properties collides between jicofo, jvb and jibri, so each goes
+# in under a prefixed name; apply-patches.sh points the scripts at it.
+COPY --from=jicofo-src /defaults/jicofo.conf          /defaults/jicofo.conf
+COPY --from=jicofo-src /defaults/logging.properties   /defaults/jicofo-logging.properties
+COPY --from=jvb-src    /defaults/jvb.conf             /defaults/jvb.conf
+COPY --from=jvb-src    /defaults/logging.properties   /defaults/jvb-logging.properties
 
-# prosody -------------------------------------------------------------
-COPY --from=prosody-src /defaults/prosody.cfg.lua         /defaults/prosody.cfg.lua
-COPY --from=prosody-src /defaults/conf.d/                 /defaults/conf.d/
-COPY --from=prosody-src /defaults/rules.d/                /defaults/rules.d/
-COPY --from=prosody-src /defaults/saslauthd.conf          /defaults/saslauthd.conf
-COPY --from=prosody-src /etc/sasl/                        /etc/sasl/
-COPY --from=prosody-src /etc/services.d/prosody/          /etc/services.d/prosody/
-COPY --from=prosody-src /etc/services.d/10-saslauthd/     /etc/services.d/10-saslauthd/
-COPY --from=prosody-src /etc/cont-init.d/10-config        /etc/cont-init.d/10-prosody-config
+# ---------------------------------------------------------------- web
+COPY --from=web-src /defaults/ /defaults/
 
-# jicofo --------------------------------------------------------------
-COPY --from=jicofo-src  /defaults/jicofo.conf             /defaults/jicofo.conf
-COPY --from=jicofo-src  /defaults/logging.properties      /defaults/jicofo-logging.properties
-COPY --from=jicofo-src  /etc/services.d/jicofo/           /etc/services.d/jicofo/
-COPY --from=jicofo-src  /etc/cont-init.d/10-config        /etc/cont-init.d/11-jicofo-config
-
-# jvb -----------------------------------------------------------------
-COPY --from=jvb-src     /defaults/jvb.conf                /defaults/jvb.conf
-COPY --from=jvb-src     /defaults/logging.properties      /defaults/jvb-logging.properties
-COPY --from=jvb-src     /etc/services.d/jvb/              /etc/services.d/jvb/
-COPY --from=jvb-src     /etc/cont-init.d/10-config        /etc/cont-init.d/12-jvb-config
-
-# jibri ---------------------------------------------------------------
-# Pull the headless Chrome binary, chromedriver, and shm-check probe
-# from the upstream jibri image rather than reinstalling them — saves
-# ~150MB of layer churn and pins us to the same Chrome version
-# upstream tested with stable-9955.
-COPY --from=jibri-src /opt/google                          /opt/google
-COPY --from=jibri-src /usr/bin/chromedriver                /usr/bin/chromedriver
-COPY --from=jibri-src /usr/bin/shm-check                   /usr/bin/shm-check
-# google-chrome is normally a symlink via /etc/alternatives in the
-# jibri image; in our image we install a wrapper script that strips
-# chromedriver's --enable-automation switch (which Selenium injects
-# unconditionally and which produces the "Chrome is being controlled
-# by automated test software" infobar in jibri recordings).  See
-# openhost-bootstrap/google-chrome-wrapper.sh for the rationale.
+# ---------------------------------------------------------------- jibri
+#
+# Chrome and chromedriver (a matched chrome-for-testing build), the shm-check
+# probe, and Chrome's managed policies (incl. the distrusted eMudhra CA keys)
+# come straight from the jibri image, so we run the Chrome upstream tested.
+COPY --from=jibri-src /opt/chrome/                  /opt/chrome/
+COPY --from=jibri-src /usr/bin/chromedriver         /usr/bin/chromedriver
+COPY --from=jibri-src /usr/bin/shm-check            /usr/bin/shm-check
+COPY --from=jibri-src /etc/opt/chrome/              /etc/opt/chrome/
+COPY --from=jibri-src /etc/pulse/default.pa         /etc/pulse/default.pa
+# The s6 user's home: .asoundrc, icewm config, the pulse config that the jibri
+# config step copies to ~/.config, and the ~/.cache, ~/.config, ~/.local
+# symlinks into /run/tmp.
+COPY --from=jibri-src --chown=s6:s6 /home/s6/       /home/s6/
+COPY --from=jibri-src /defaults/jibri.conf          /defaults/jibri.conf
+COPY --from=jibri-src /defaults/xmpp.conf           /defaults/jibri-xmpp.conf
+COPY --from=jibri-src /defaults/logging.properties  /defaults/jibri-logging.properties
+COPY --from=jibri-src /defaults/xorg-video-dummy.conf /defaults/xorg-video-dummy.conf
+# google-chrome is a symlink to /opt/chrome/chrome in the jibri image; in our
+# image it is a wrapper that strips chromedriver's --enable-automation switch
+# (which produces the "Chrome is being controlled by automated test software"
+# infobar in recordings) and picks the right X display per jibri instance.
+# See openhost-bootstrap/google-chrome-wrapper.sh.
 COPY openhost-bootstrap/google-chrome-wrapper.sh /usr/bin/google-chrome
 RUN chmod +x /usr/bin/google-chrome && \
-    ln -sf google-chrome /usr/bin/google-chrome-stable
-# Defaults templates
-COPY --from=jibri-src /defaults/jibri.conf                 /defaults/jibri.conf
-COPY --from=jibri-src /defaults/xmpp.conf                  /defaults/jibri-xmpp.conf
-COPY --from=jibri-src /defaults/logging.properties         /defaults/jibri-logging.properties
-COPY --from=jibri-src /defaults/xorg-video-dummy.conf      /defaults/xorg-video-dummy.conf
-# Services + cont-init
-COPY --from=jibri-src /etc/services.d/10-xorg/             /etc/services.d/15-jibri-xorg/
-COPY --from=jibri-src /etc/services.d/30-pulse/            /etc/services.d/16-jibri-pulse/
-COPY --from=jibri-src /etc/services.d/40-jibri/            /etc/services.d/17-jibri/
-COPY --from=jibri-src /etc/cont-init.d/10-config           /etc/cont-init.d/16-jibri-config
-# jibri also wants a small dotfile in $HOME for ALSA loopback,
-# pulse config, and the icewm config the upstream image relies on.
-# The COPY preserves contents but not ownership, so we re-chown
-# to the jibri user (the apt postinst created jibri:jibri).
-COPY --from=jibri-src /home/jibri/                         /home/jibri/
-RUN chown -R jibri:jibri /home/jibri
+    ln -sf google-chrome /usr/bin/google-chrome-stable && \
+    if ldd /opt/chrome/chrome | grep 'not found'; then echo "chrome is missing libraries" >&2; exit 1; fi
 
-# web -----------------------------------------------------------------
-COPY --from=web-src     /defaults/default                 /defaults/nginx-default.conf
-COPY --from=web-src     /defaults/nginx.conf              /defaults/nginx.conf
-COPY --from=web-src     /defaults/meet.conf               /defaults/meet.conf
-COPY --from=web-src     /defaults/ssl.conf                /defaults/ssl.conf
-COPY --from=web-src     /defaults/ffdhe2048.txt           /defaults/ffdhe2048.txt
-COPY --from=web-src     /defaults/system-config.js        /defaults/system-config.js
-COPY --from=web-src     /defaults/settings-config.js      /defaults/settings-config.js
-COPY --from=web-src     /defaults/interface_config.js     /defaults/interface_config.js
-COPY --from=web-src     /etc/services.d/nginx/            /etc/services.d/nginx/
-COPY --from=web-src     /etc/cont-init.d/10-config        /etc/cont-init.d/13-web-config
-
-# ---------------------------------------------------------------- patches
+# ---------------------------------------------------------------- services
 #
-# Each service's upstream cont-init assumes `/config` is *its own*
-# directory. Since we're running four services in one container we
-# split them into `/config/prosody`, `/config/jicofo`, `/config/jvb`,
-# and `/config/web`, then rewrite the cont-init + run scripts to
-# match. Simpler than trying to coordinate a shared `/config`.
+# Upstream's s6-rc service definitions and the scripts they run, one tree per
+# image. apply-patches.sh merges them into /etc/s6-overlay, renaming the
+# colliding `10-config` oneshots and `config` scripts per service, starts
+# every upstream service as the s6 user, and installs our per-instance jibri
+# services.
+COPY --from=prosody-src /etc/s6-overlay/ /tmp/upstream/prosody/
+COPY --from=jicofo-src  /etc/s6-overlay/ /tmp/upstream/jicofo/
+COPY --from=jvb-src     /etc/s6-overlay/ /tmp/upstream/jvb/
+COPY --from=web-src     /etc/s6-overlay/ /tmp/upstream/web/
 COPY patches/ /tmp/patches/
-RUN bash /tmp/patches/apply-patches.sh && rm -rf /tmp/patches
+RUN bash /tmp/patches/apply-patches.sh && rm -rf /tmp/patches /tmp/upstream
 
 # ---------------------------------------------------------------- openhost glue
 #
-# One bespoke cont-init of our own runs before any of the others and
-# discovers the OpenHost-assigned public hostname from the first
-# incoming HTTP request. The value is cached to /config/hostname so
-# subsequent boots skip this. It also sets defaults for variables the
-# upstream templates require that we don't want the operator to have
-# to set manually (JICOFO_AUTH_PASSWORD, JVB_AUTH_PASSWORD, etc.).
+# Legacy cont-init.d scripts run as root inside s6-overlay's `base` bundle,
+# before any upstream service. 00-openhost-config discovers the public
+# hostname from the first incoming HTTP request (cached in app data), loads
+# or generates the shared secrets, and exports the env vars the upstream
+# templates need.
 COPY openhost-bootstrap/ /opt/openhost-jitsi/
 COPY openhost-bootstrap/00-openhost-config.sh /etc/cont-init.d/00-openhost-config
+COPY openhost-bootstrap/20-jibri-config.sh /etc/cont-init.d/20-jibri-config
 
 # ---------------------------------------------------------------- recordings
 #
 # Browser-side local-recording with server-side persistence. A small
 # Python sidecar (server.py) accepts chunked uploads and serves the
-# resulting .webm files behind an admin-token URL. A JS shim
-# injected via body.html intercepts Jitsi's saveRecording download
-# and uploads the blob to the sidecar instead. Detailed design lives
-# in recordings/server.py and recordings/recording-upload.js.
+# resulting files behind an admin-token URL. A JS shim injected via
+# body.html intercepts Jitsi's saveRecording download and uploads the
+# blob to the sidecar instead; Jibri's finalize script uploads its MP4s
+# the same way. Detailed design lives in recordings/server.py and
+# recordings/recording-upload.js.
 COPY recordings/server.py /opt/openhost-recordings/server.py
-COPY recordings/recordings-init.sh /etc/cont-init.d/14-recordings-init
+COPY recordings/recordings-init.sh /etc/cont-init.d/10-recordings-init
 COPY recordings/recording-upload.js /usr/share/jitsi-meet/static/openhost-recordings.js
 COPY recordings/body.html /usr/share/jitsi-meet/body.html
 COPY recordings/jibri-finalize.sh /opt/openhost-recordings/jibri-finalize.sh
 
-RUN chmod +x /etc/cont-init.d/* /opt/openhost-jitsi/*.sh /opt/openhost-recordings/jibri-finalize.sh /etc/services.d/*/run 2>/dev/null || true
+RUN chmod +x /etc/cont-init.d/* /opt/openhost-jitsi/*.sh /opt/openhost-recordings/jibri-finalize.sh
 
 # ---------------------------------------------------------------- runtime
-EXPOSE 80
+# nginx listens on 8000 (upstream moved to unprivileged ports in
+# stable-11146); cloudinabottle.toml routes the app to it.
+EXPOSE 8000
 # ENABLE_XMPP_WEBSOCKET=0: the OpenHost router's WebSocket proxy
 # accepts the client handshake without echoing the client's requested
 # subprotocol (it calls Quart's client_ws.accept() without passing
@@ -246,13 +225,14 @@ EXPOSE 80
 # still works through OpenHost's HTTP proxy path. This is slightly
 # slower for signaling than WebSocket but indistinguishable to
 # end users.
+#
+# No CSP_HEADER: upstream's Content-Security-Policy header (stable-10741)
+# is opt-in and off by default, and we leave it off.
 ENV DISABLE_HTTPS=1 \
     ENABLE_HTTP_REDIRECT=0 \
     ENABLE_IPV6=0 \
     XMPP_SERVER=127.0.0.1 \
     XMPP_BOSH_URL_BASE=http://127.0.0.1:5280 \
-    DISABLE_COLIBRI_WEBSOCKET_JVB_LOOKUP=1 \
-    ENABLE_COLIBRI_WEBSOCKET=0 \
     ENABLE_XMPP_WEBSOCKET=0 \
     DISABLE_POLLS=1 \
     TZ=UTC \
@@ -269,8 +249,9 @@ ENV DISABLE_HTTPS=1 \
     XMPP_AUTH_DOMAIN=auth.meet.jitsi \
     XMPP_MUC_DOMAIN=muc.meet.jitsi \
     XMPP_GUEST_DOMAIN=guest.meet.jitsi \
+    JIBRI_RECORDING_DIR=/storage/recordings \
     JIBRI_FINALIZE_RECORDING_SCRIPT_PATH=/opt/openhost-recordings/jibri-finalize.sh
 
-VOLUME ["/config"]
-
-# ENTRYPOINT ["/init"] is inherited from jitsi/base.
+# ENTRYPOINT ["/init"] is inherited from jitsi/base. We stay root (upstream
+# ends with USER s6); see the note at the top.
+USER root

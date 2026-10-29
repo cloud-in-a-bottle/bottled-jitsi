@@ -1,18 +1,11 @@
-#!/usr/bin/with-contenv bash
-# Cont-init for the openhost-jitsi recordings sidecar.
-#
-# Runs after the upstream web cont-init (13-web-config) so that
-# /config/web/nginx/ is already populated with the rendered
-# meet.conf. We then:
+#!/command/with-contenv bash
+# Cont-init for the openhost-jitsi recordings sidecar. Runs as root
+# after 00-openhost-config and before the upstream web config oneshot
+# (web-config) renders nginx's config. We:
 #   1. Render an s6 run script for the sidecar with the resolved
 #      data dir baked in.
-#   2. Drop our nginx fragment into /config/web/nginx-custom/.
-#   3. Inject the
-#         include /config/web/nginx-custom/*.conf;
-#      directive into the rendered meet.conf, because stable-9955's
-#      meet.conf doesn't ship that include line (newer upstream
-#      versions do; see comment around the python injection block
-#      below).
+#   2. Drop our nginx fragment into /run/web/config/nginx-custom/,
+#      which upstream's meet.conf includes (since stable-10008).
 #
 # Idempotent: safe to re-run on every container boot.
 
@@ -32,7 +25,7 @@ chmod 700 "$REC_DIR"
 # run script because $OPENHOST_APP_DATA_DIR isn't known at image
 # build time.
 # Resolve the public hostname. 00-openhost-config.sh exports
-# OPENHOST_PUBLIC_HOSTNAME via /var/run/s6/container_environment, so
+# OPENHOST_PUBLIC_HOSTNAME via /run/s6/container_environment, so
 # `with-contenv bash` makes it available as a shell variable.  Fall
 # back to the cached file if the env var didn't propagate (e.g. on
 # very-first boot where the discovery dance is still in progress).
@@ -47,7 +40,7 @@ fi
 
 mkdir -p /etc/services.d/recordings
 cat > /etc/services.d/recordings/run <<EOF
-#!/usr/bin/with-contenv bash
+#!/command/with-contenv bash
 exec python3 /opt/openhost-recordings/server.py \\
     --rec-dir "$REC_DIR" \\
     --admin-token-file "$ADMIN_TOKEN_FILE" \\
@@ -58,12 +51,11 @@ EOF
 chmod +x /etc/services.d/recordings/run
 
 # Custom nginx fragment that proxies our two URL prefixes to the
-# sidecar. stable-9955's meet.conf does NOT have an
-# `include /config/nginx-custom/*.conf` directive (it's a more
-# recent upstream addition), so we both write the fragment and
-# inject the include into the rendered meet.conf.
-mkdir -p /config/web/nginx-custom
-cat > /config/web/nginx-custom/openhost-recordings.conf <<'EOF'
+# sidecar. The web-config oneshot (running as the s6 user) creates the
+# rest of /run/web later, so the directories must be s6's.
+install -d -o s6 -g s6 /run/web /run/web/config /run/web/config/nginx-custom
+NGINX_FRAGMENT=/run/web/config/nginx-custom/openhost-recordings.conf
+cat > "$NGINX_FRAGMENT" <<'EOF'
 # Proxy /api/recordings/{init,<id>/chunk,<id>/finalize} and the
 # admin-token-rooted /<token>/ listing pages to the recordings
 # sidecar on 127.0.0.1:5060.
@@ -81,7 +73,7 @@ location ^~ /api/recordings/ {
     proxy_buffering off;
     # The 5 MiB chunks the JS shim sends are well under nginx's
     # global client_max_body_size 0 (which means "unlimited" in
-    # docker-jitsi-meet's meet.conf).
+    # docker-jitsi-meet's nginx.conf).
     proxy_read_timeout 300s;
     proxy_send_timeout 300s;
 }
@@ -100,27 +92,7 @@ location ^~ /_recordings/ {
 }
 EOF
 
-# Inject the include directive into the rendered meet.conf if it's
-# not already there. The include must be inside the server { ... }
-# block; we anchor on the `client_max_body_size 0;` line near the
-# top, which has appeared in every meet.conf revision since at least
-# stable-8252.
-MEET_CONF=/config/web/nginx/meet.conf
-if [[ -f "$MEET_CONF" ]] && ! grep -q "/config/web/nginx-custom" "$MEET_CONF"; then
-    python3 - "$MEET_CONF" <<'PY'
-import sys, pathlib
-p = pathlib.Path(sys.argv[1])
-text = p.read_text()
-needle = "client_max_body_size 0;"
-if needle in text:
-    inj = "include /config/web/nginx-custom/*.conf;"
-    text = text.replace(needle, needle + "\n\n" + inj, 1)
-    p.write_text(text)
-    print("[recordings-init] injected nginx-custom include into meet.conf", file=sys.stderr)
-else:
-    print("[recordings-init] WARNING: could not inject include — anchor missing", file=sys.stderr)
-PY
-fi
+chmod 644 "$NGINX_FRAGMENT"
 
 log "config written: $REC_DIR (data dir), $ADMIN_TOKEN_FILE (admin token)"
 
