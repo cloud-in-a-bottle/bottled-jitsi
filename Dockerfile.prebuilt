@@ -88,6 +88,11 @@ RUN apt-dpkg-wrap apt-get update && \
         libgl1-mesa-dri libgtk-3-0 procps pulseaudio rtkit unzip \
         `# ours` \
         python3 openssl && \
+    `# base-java ships Node.js 20 (EOL) only for the autoscaler sidecar, which` \
+    `# we don't run (jitsi/docker-jitsi-meet#2348); drop it.` \
+    apt-dpkg-wrap apt-get purge -y nodejs && \
+    rm /etc/apt/sources.list.d/nodejs.sources && \
+    dpkg-query -W jitsi-meet-web prosody jicofo jitsi-videobridge2 jibri && \
     apt-cleanup
 
 # Filesystem tweaks the upstream Dockerfiles make after installing.
