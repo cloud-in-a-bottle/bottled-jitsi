@@ -1,12 +1,13 @@
-#!/usr/bin/with-contenv bash
-# OpenHost-specific bootstrap. Runs before any of the upstream
-# docker-jitsi-meet cont-init scripts so they can read the values
-# we inject here out of /var/run/s6/container_environment (which
+#!/command/with-contenv bash
+# OpenHost-specific bootstrap. A legacy cont-init.d script, so s6-overlay
+# runs it as root in its `base` bundle, before any of the upstream
+# docker-jitsi-meet services (which all depend on `base`). They read the
+# values we inject here out of /run/s6/container_environment (which
 # with-contenv surfaces as shell env vars).
 #
-# We do three things:
+# We do four things:
 #   1. Resolve the public hostname (from $PUBLIC_URL if set, else
-#      from a cached first-request discovery dance on port 80).
+#      from a cached first-request discovery dance on port 8000).
 #   2. Load persisted auth passwords from $OPENHOST_APP_DATA_DIR, or
 #      generate + persist fresh ones on first boot.  Jicofo/JVB need
 #      these to be stable across restarts or prosody's flat-file
@@ -14,6 +15,8 @@
 #   3. Export the env vars the upstream templates expect:
 #      PUBLIC_URL, JICOFO_AUTH_PASSWORD, JVB_AUTH_PASSWORD,
 #      JVB_ADVERTISE_IPS, JVB_PORT.
+#   4. Let the unprivileged s6 user, which every upstream service runs
+#      as, create its runtime dirs in /run and read the exported env.
 
 set -eu
 
@@ -28,7 +31,8 @@ mkdir -p "$APP_DATA" "$APP_TEMP"
 # Priority:
 #   1. $PUBLIC_URL (or $OPENHOST_PUBLIC_HOSTNAME) from the operator
 #   2. Cached value from a previous boot
-#   3. First-request capture on port 80 via a one-shot listener
+#   3. First-request capture on port 8000 (where nginx will listen)
+#      via a one-shot listener
 
 CACHED_HOSTNAME_FILE="$APP_DATA/hostname"
 
@@ -157,7 +161,7 @@ JVB_AUTH_PASSWORD_VAL="$(persist_password JVB_AUTH_PASSWORD)"
 
 # Jibri secrets — only generated when recording is enabled.  They
 # never leave the container; prosody, jicofo, and jibri all read
-# them out of /var/run/s6/container_environment via with-contenv.
+# them out of /run/s6/container_environment via with-contenv.
 if [[ "${ENABLE_RECORDING:-}" == "1" ]]; then
     JIBRI_XMPP_PASSWORD_VAL="$(persist_password JIBRI_XMPP_PASSWORD)"
     JIBRI_RECORDER_PASSWORD_VAL="$(persist_password JIBRI_RECORDER_PASSWORD)"
@@ -224,12 +228,15 @@ fi
 
 # -------------------------------------------------------------- export
 #
-# s6-overlay's with-contenv reads from /var/run/s6/container_environment.
+# s6-overlay's with-contenv reads from /run/s6/container_environment.
 # We write our values there so all later cont-init scripts (and the
 # services they bootstrap) see them via `with-contenv`.
 
-CENV=/var/run/s6/container_environment
+CENV=/run/s6/container_environment
 mkdir -p "$CENV"
+# Upstream's scripts and templates assume the s6 user's home (pulse, chrome
+# and java read it); the container itself starts as root with HOME=/root.
+printf '%s' /home/s6                      > "$CENV/HOME"
 printf '%s' "$PUBLIC_URL_VAL"             > "$CENV/PUBLIC_URL"
 printf '%s' "$HOSTNAME_VAL"               > "$CENV/OPENHOST_PUBLIC_HOSTNAME"
 printf '%s' "$JICOFO_AUTH_PASSWORD_VAL"   > "$CENV/JICOFO_AUTH_PASSWORD"
@@ -246,5 +253,16 @@ printf '%s' "$JVB_AUTH_PASSWORD_VAL"      > "$CENV/JVB_AUTH_PASSWORD"
 # to match the [[ports]] entry in openhost.toml (OpenHost only allows
 # extra ports in the 9000-9999 range).
 printf '%s' "${JVB_PORT:-9500}" > "$CENV/JVB_PORT"
+
+# -------------------------------------------------------------- s6 user
+#
+# Upstream runs s6-overlay itself as the s6 user on a tmpfs /run it owns, and
+# each service creates /run/<service>/... at start. Our s6-overlay runs as
+# root (the app data mount belongs to container root), so hand /run itself
+# to s6 and make the container env, which carries the secrets above,
+# readable by it. Nothing in the container runs as any other user.
+chown s6:s6 /run
+chmod 755 "$CENV"
+chmod 644 "$CENV"/*
 
 log "bootstrap complete"

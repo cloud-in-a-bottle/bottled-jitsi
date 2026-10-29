@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """First-boot hostname discovery helper.
 
-Runs a one-shot HTTP server on port 80 until the first incoming
-request gives us an X-Forwarded-Host (the header OpenHost's router
-sets with the public hostname the browser used). We write that value
-to the cache file argv[1] and exit, at which point the rest of
-cont-init continues and nginx takes over port 80.
+Runs a one-shot HTTP server on port 8000 (the app's port, where nginx
+listens later) until the first incoming request gives us an
+X-Forwarded-Host (the header OpenHost's router sets with the public
+hostname the browser used). We write that value to the cache file
+argv[1] and exit, at which point the rest of cont-init continues and
+nginx takes over port 8000.
 """
 
 from __future__ import annotations
@@ -16,7 +17,7 @@ import sys
 from pathlib import Path
 
 
-BIND_PORT = 80
+BIND_PORT = 8000
 HTML = b"""<!DOCTYPE html>
 <html><head><meta http-equiv=\"refresh\" content=\"5\"><title>Jitsi starting</title></head>
 <body style=\"background:#0f1115;color:#e6e9ef;font-family:system-ui;padding:40px;text-align:center\">

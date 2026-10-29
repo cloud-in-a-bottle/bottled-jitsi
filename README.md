@@ -17,19 +17,20 @@ Edit `Dockerfile.prebuilt` and the files it copies (`patches/`,
 they are merged and the workflow finishes.
 
 Runs the full Jitsi stack — Prosody (XMPP), Jicofo (focus), Jitsi
-Videobridge (SFU), and Nginx — in a single container supervised by
-[s6-overlay](https://github.com/just-containers/s6-overlay). The
-image is assembled by merging the rootfs trees of the four official
-`jitsi/web`, `jitsi/prosody`, `jitsi/jicofo`, and `jitsi/jvb`
-container images, so the tpl-rendered configs are exactly those
-upstream maintains and tests.
+Videobridge (SFU), Nginx and Jibri (recording) — in a single container
+supervised by [s6-overlay](https://github.com/just-containers/s6-overlay)
+v3. The image is built on `ghcr.io/jitsi/base-java` and takes the config
+templates and s6 service definitions of the official `ghcr.io/jitsi/web`,
+`prosody`, `jicofo`, `jvb` and `jibri` images (all pinned to one
+docker-jitsi-meet release by tag and digest), so the tpl-rendered configs
+are exactly those upstream maintains and tests.
 
 ## What you get
 
 - `https://<app>.<your-openhost-host>/` — the standard Jitsi Meet web
   UI. Pick a room name, click **Start meeting**, share the URL.
 - Works with standard Jitsi Meet client apps (desktop, iOS, Android)
-  since the server speaks vanilla BOSH / XMPP-WebSocket / Colibri.
+  since the server speaks vanilla BOSH / Colibri.
 - Self-contained: no external TURN/STUN/coturn required on the
   happy path. JVB self-discovers its public IP via a static mapping
   or STUN and advertises it in ICE candidates.
@@ -40,7 +41,7 @@ upstream maintains and tests.
  browser
     │  https + wss  (443/tcp)                 media UDP (9500/udp)
     ▼                                                      │
- OpenHost Caddy  ─── plain http/ws ───▶ nginx :80          │
+ OpenHost Caddy  ─── plain http/ws ───▶ nginx :8000        │
                                          │                 │
                                          ▼                 │
                                        meet.conf           │
@@ -58,11 +59,16 @@ upstream maintains and tests.
                                                         browser◀
 ```
 
-All four services live in one container. `/config/{prosody,jicofo,jvb,web}`
-are per-service subdirs so their `chown -R` lines don't fight each
-other. `s6-overlay` supervises the four services via the exact same
-`run` scripts the upstream jitsi/* images ship, after a build-time
-sed pass to retarget `/config/...` paths into the per-service subdirs.
+All services live in one container. Each upstream service renders its
+config into its own `/run/<service>/config`, so `s6-overlay` runs the
+exact config and `run` scripts the upstream images ship;
+`patches/apply-patches.sh` only renames the colliding `10-config`
+oneshots per service and starts each service as the unprivileged `s6`
+user, as upstream does. s6-overlay itself runs as root, so our cont-init
+scripts (`/etc/cont-init.d/`: hostname discovery and secrets, the
+recordings sidecar, jibri config) can write the app data dir, which Cloud
+in a Bottle mounts owned by container root. Jibri runs as our own
+per-instance services (see [Parallel recordings](#parallel-recordings)).
 
 ## Ports
 
@@ -70,7 +76,7 @@ Declared in `openhost.toml`:
 
 | Port       | Purpose                                            |
 |------------|----------------------------------------------------|
-| 80/tcp     | Container nginx; Cloud in a Bottle proxies to it internally |
+| 8000/tcp   | Container nginx; Cloud in a Bottle proxies to it internally |
 | 9500/udp   | JVB media; **must be reachable from the internet** |
 
 The 9500 port is in the 9000–9999 range Cloud in a Bottle permits for extra
@@ -83,7 +89,7 @@ redeploy.
 
 Cloud in a Bottle does not currently inject the app's public hostname as an
 env var. On first boot, cont-init runs a one-shot HTTP listener on
-port 80 that captures `X-Forwarded-Host` from the first incoming
+port 8000 that captures `X-Forwarded-Host` from the first incoming
 request, caches it to `$OPENHOST_APP_DATA_DIR/hostname`, and uses
 that for all Jitsi config rendering. Subsequent boots skip the
 discovery step. If you'd rather set it explicitly, provide
@@ -91,13 +97,13 @@ discovery step. If you'd rather set it explicitly, provide
 
 ## Shared secrets
 
-`$OPENHOST_APP_DATA_DIR/secrets/` holds the three inter-service
-XMPP passwords (`JICOFO_AUTH_PASSWORD`, `JICOFO_COMPONENT_SECRET`,
-`JVB_AUTH_PASSWORD`). They're auto-generated on first boot and
-reused forever. Prosody's flat-file user db in
-`$OPENHOST_APP_DATA_DIR/prosody-data/` (effectively `/config/prosody/data`
-inside the container) persists the registered focus + jvb users so
-services stay authenticated across restarts.
+`$OPENHOST_APP_DATA_DIR/secrets/` holds the inter-service XMPP
+passwords (`JICOFO_AUTH_PASSWORD`, `JICOFO_COMPONENT_SECRET`,
+`JVB_AUTH_PASSWORD`, and with recording on `JIBRI_XMPP_PASSWORD` and
+`JIBRI_RECORDER_PASSWORD`). They're auto-generated on first boot and
+reused forever. Prosody's user db (`/var/lib/prosody/data`) is not
+persisted: upstream's `70-register-setup` oneshot registers the focus,
+jvb and jibri users with those passwords on every boot.
 
 ## Resource requirements
 
@@ -228,10 +234,8 @@ No ALSA device access (`/dev/snd`) is needed.
   fail to get media through. Deploy a coturn separately and wire it
   in via `TURN_HOST`/`TURN_PORT` env vars (exposed by the upstream
   prosody template).
-- **Colibri WebSocket** — disabled (`ENABLE_COLIBRI_WEBSOCKET=0`).
-  JVB falls back to WebRTC DataChannels over SCTP, which works fine.
-  Re-enabling would require more work to wire up the nginx
-  `/colibri-ws/...` regex to a colocated JVB on 127.0.0.1.
+- **Colibri WebSocket** — upstream removed it in stable-11146; bridge
+  channels use WebRTC DataChannels over SCTP.
 
 ## Licensing
 

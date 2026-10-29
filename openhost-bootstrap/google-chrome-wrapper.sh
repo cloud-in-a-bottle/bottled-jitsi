@@ -1,5 +1,5 @@
 #!/bin/bash
-# Wrapper for /opt/google/chrome/google-chrome that strips arguments
+# Wrapper for /opt/chrome/chrome that strips arguments
 # chromedriver injects which produce the "Chrome is being controlled
 # by automated test software" infobar in jibri recordings.
 #
@@ -29,14 +29,15 @@
 # through unchanged.
 set -e
 
-# The real chrome binary lives in /opt/google/chrome/chrome; the
-# upstream google-chrome wrapper sets up xdg paths and then exec's
-# it. We replicate the relevant pieces of that wrapper here so any
-# environment-variable dependencies (CHROME_WRAPPER, PATH for old
-# xdg utilities) still work.
+# The real chrome binary lives in /opt/chrome/chrome (a
+# chrome-for-testing build, copied from the upstream jibri image).
+# Google's .deb ships a google-chrome wrapper that sets up xdg paths
+# and then exec's the binary; we replicate the relevant pieces of
+# that wrapper here so any environment-variable dependencies
+# (CHROME_WRAPPER, PATH for old xdg utilities) still work.
 
 export CHROME_WRAPPER="$(readlink -f "$0")"
-HERE="/opt/google/chrome"
+HERE="/opt/chrome"
 
 if ! command -v xdg-settings >/dev/null 2>&1; then
     export PATH="$HERE:$PATH"
@@ -61,7 +62,7 @@ export GNOME_DISABLE_CRASH_DIALOG=SET_BY_GOOGLE_CHROME
 # captures a black screen.
 #
 # Walk up the process tree from chromedriver to find the jibri
-# java process; its -Dconfig.file=/etc/jitsi/jibri/jibri-N.conf
+# java process; its -Dconfig.file=/run/jibri/config/jibri-N.conf
 # tells us the instance index, from which we derive DISPLAY=:N.
 detect_jibri_display() {
     local pid ppid cmdline
