@@ -18,6 +18,12 @@ Edit `Dockerfile.prebuilt` and the files it copies (`patches/`,
 `openhost-bootstrap/`, `recordings/`) as before; changes reach installs once
 they are merged and the image job finishes.
 
+`cloudinabottle.toml` also sets `prebuilt_image`, so Cloud in a Bottle pulls our
+signed prebuilt image (built by CI from each release tag) instead of building
+the Dockerfile; older openhost ignores it and builds the one-line `Dockerfile`,
+which pulls `:main`. To fork and modify this app, comment out `prebuilt_image`
+and set `image = "Dockerfile.prebuilt"` so your instance builds from source.
+
 Runs the full Jitsi stack — Prosody (XMPP), Jicofo (focus), Jitsi
 Videobridge (SFU), Nginx and Jibri (recording) — in a single container
 supervised by [s6-overlay](https://github.com/just-containers/s6-overlay)
