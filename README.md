@@ -4,19 +4,17 @@
 
 ## Prebuilt image
 
-Building the combined Jitsi image takes minutes, so installs do not build it.
-On every push to `main`, after the tests pass, the `image` job in
-`.github/workflows/ci.yml` (app-template's reusable `app-image.yml`) builds
-`Dockerfile.prebuilt`, publishes it to
-`registry.cloudinabottle.org/bottled-jitsi` as `:main` and `:<commit-sha>`,
-and signs it with cosign keyless. The `Dockerfile` that `cloudinabottle.toml`
-points at is a single `FROM registry.cloudinabottle.org/bottled-jitsi:main`, so
-installing the app pulls the published image. Pull requests build
-`Dockerfile.prebuilt` in the tests without publishing it.
+Building the combined Jitsi image takes minutes. On every push to `main`,
+after the tests pass, the `image` job in `.github/workflows/ci.yml`
+(app-template's reusable `app-image.yml`) builds the `Dockerfile`, publishes it
+to `registry.cloudinabottle.org/bottled-jitsi` as `:main` and `:<commit-sha>`,
+and signs it with cosign keyless. Pull requests build it in the tests without
+publishing it.
 
-Edit `Dockerfile.prebuilt` and the files it copies (`patches/`,
-`openhost-bootstrap/`, `recordings/`) as before; changes reach installs once
-they are merged and the image job finishes.
+`cloudinabottle.toml` sets `prebuilt_image`, so Cloud in a Bottle pulls our
+signed prebuilt image (built by CI from each release tag) instead of building
+the Dockerfile. To fork and modify this app, comment out `prebuilt_image` so
+your instance builds from source.
 
 Runs the full Jitsi stack — Prosody (XMPP), Jicofo (focus), Jitsi
 Videobridge (SFU), Nginx and Jibri (recording) — in a single container
@@ -128,7 +126,7 @@ concurrent recordings.
   Cloud in a Bottle account holders. If you want to lock it down, enable
   Jitsi's [secure-domain](https://jitsi.github.io/handbook/docs/devops-guide/secure-domain/)
   mode via `ENABLE_AUTH=1` (not yet exposed as a first-class env var
-  in this wrapper — edit the `Dockerfile.prebuilt` ENV block).
+  in this wrapper — edit the `Dockerfile` ENV block).
 - Media (DTLS-SRTP over UDP/9500) is end-to-end encrypted between
   browsers and JVB. JVB sees plaintext (SFU semantics). Turn on
   [E2EE](https://jitsi.github.io/handbook/docs/user-guide/e2ee/) in
@@ -171,7 +169,7 @@ By default the container runs **two** Jibri instances, so up to two
 users can record concurrently. The third simultaneous attempt will
 fail with "Recording is currently unavailable, please try again
 later". To raise the count, set `MAX_PARALLEL_RECORDINGS=N` in the
-`Dockerfile.prebuilt` ENV block (or the Cloud in a Bottle `[env]` overrides) where `N`
+`Dockerfile` ENV block (or the Cloud in a Bottle `[env]` overrides) where `N`
 is between 1 and 6, and bump ``[resources]`` in step (see the sizing
 table below).
 

@@ -9,16 +9,19 @@ jobs:
   test:
     uses: cloud-in-a-bottle/app-template/.github/workflows/app-test.yml@main
     with:
-      # The tests build the full image from Dockerfile.prebuilt (see tests/conftest.py).
+      # The tests build the full Jitsi image, which takes a while.
       timeout-minutes: 75
 
   image:
     needs: test
     if: github.event_name == 'push'
     uses: cloud-in-a-bottle/app-template/.github/workflows/app-image.yml@main
-    with:
-      # Publish the full build; the root Dockerfile just pulls this image.
-      dockerfile: Dockerfile.prebuilt
     permissions:
       contents: read
       id-token: write
+
+  release:
+    needs: image
+    uses: cloud-in-a-bottle/app-template/.github/workflows/app-release.yml@main
+    permissions:
+      contents: write

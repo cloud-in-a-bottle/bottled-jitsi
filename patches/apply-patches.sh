@@ -1,6 +1,6 @@
 #!/bin/bash
 # Merges the upstream images' s6-overlay v3 service trees (copied to
-# /tmp/upstream/<image>/ by Dockerfile.prebuilt) into this image's
+# /tmp/upstream/<image>/ by the Dockerfile) into this image's
 # /etc/s6-overlay, and installs our per-instance jibri services. Run at
 # image build time.
 #
@@ -9,7 +9,7 @@
 # every service renders its config into its own /run/<service>/config, so
 # the only collisions left are those names: the oneshot becomes
 # `<image>-config` and its script `scripts/<image>-config`. Upstream's images
-# run as the s6 user; ours runs s6-overlay as root (see Dockerfile.prebuilt),
+# run as the s6 user; ours runs s6-overlay as root (see the Dockerfile),
 # so every upstream oneshot and longrun is started through
 # `s6-setuidgid s6`. Fails the build if upstream's layout changes under us.
 set -euo pipefail

@@ -1,12 +1,13 @@
 [app]
 name = "jitsi"
-version = "0.2.0"
+version = "1.0.0"
 description = "Jitsi Meet video conferencing: XMPP + jicofo + jitsi-videobridge + nginx + jibri (recording) in one container."
 
 [runtime.container]
-# A one-line Dockerfile that pulls registry.cloudinabottle.org/bottled-jitsi:main,
-# built from Dockerfile.prebuilt and published from main by CI.
 image = "Dockerfile"
+# Cloud in a Bottle pulls this signed prebuilt image (built from the release tag's commit by CI) instead of building
+# `image`. If you fork this app and change it, comment this line out so your instance builds `image` instead.
+prebuilt_image = "registry.cloudinabottle.org/bottled-jitsi"
 port = 8000
 # Jibri runs a headless Chrome that captures the meeting; Chrome's
 # renderer needs ~600-800 MiB of /dev/shm per concurrent Chrome
