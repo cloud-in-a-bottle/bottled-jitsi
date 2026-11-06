@@ -11,3 +11,11 @@ jobs:
     with:
       # The tests build the full image from Dockerfile.prebuilt (see tests/conftest.py).
       timeout-minutes: 75
+
+  image:
+    needs: test
+    if: github.event_name == 'push'
+    uses: cloud-in-a-bottle/app-template/.github/workflows/app-image.yml@main
+    permissions:
+      contents: read
+      id-token: write
