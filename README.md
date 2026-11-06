@@ -5,16 +5,18 @@
 ## Prebuilt image
 
 Building the combined Jitsi image takes minutes, so installs do not build it.
-On every push to `main`, `.github/workflows/image.yml` builds
-`Dockerfile.prebuilt` and publishes it with zstd layers to
-`ghcr.io/cloud-in-a-bottle/bottled-jitsi` as `:latest` and `:<commit-sha>`.
-The `Dockerfile` that `cloudinabottle.toml` points at is a single
-`FROM ghcr.io/cloud-in-a-bottle/bottled-jitsi:latest`, so installing the app
-pulls the published image. Pull requests build the image without publishing.
+On every push to `main`, after the tests pass, the `image` job in
+`.github/workflows/ci.yml` (app-template's reusable `app-image.yml`) builds
+`Dockerfile.prebuilt`, publishes it to
+`registry.cloudinabottle.org/bottled-jitsi` as `:main` and `:<commit-sha>`,
+and signs it with cosign keyless. The `Dockerfile` that `cloudinabottle.toml`
+points at is a single `FROM registry.cloudinabottle.org/bottled-jitsi:main`, so
+installing the app pulls the published image. Pull requests build
+`Dockerfile.prebuilt` in the tests without publishing it.
 
 Edit `Dockerfile.prebuilt` and the files it copies (`patches/`,
 `openhost-bootstrap/`, `recordings/`) as before; changes reach installs once
-they are merged and the workflow finishes.
+they are merged and the image job finishes.
 
 Runs the full Jitsi stack — Prosody (XMPP), Jicofo (focus), Jitsi
 Videobridge (SFU), Nginx and Jibri (recording) — in a single container
