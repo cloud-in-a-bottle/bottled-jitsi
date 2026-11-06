@@ -8,7 +8,8 @@ description = "Jitsi Meet video conferencing: XMPP + jicofo + jitsi-videobridge 
 # built from Dockerfile.prebuilt and published from main by CI.
 image = "Dockerfile"
 # Cloud in a Bottle pulls this signed prebuilt image (built from the release tag's commit by CI) instead of building
-# `image`. If you fork this app and change it, comment this line out so your instance builds `image` instead.
+# `image`. If you fork this app and change it, comment this line out and set `image = "Dockerfile.prebuilt"`, so your
+# instance builds from source (`Dockerfile` itself only pulls our published image).
 prebuilt_image = "registry.cloudinabottle.org/bottled-jitsi"
 port = 8000
 # Jibri runs a headless Chrome that captures the meeting; Chrome's
