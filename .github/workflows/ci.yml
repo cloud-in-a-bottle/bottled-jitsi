@@ -16,6 +16,9 @@ jobs:
     needs: test
     if: github.event_name == 'push'
     uses: cloud-in-a-bottle/app-template/.github/workflows/app-image.yml@main
+    with:
+      # Publish the full build; the root Dockerfile just pulls this image.
+      dockerfile: Dockerfile.prebuilt
     permissions:
       contents: read
       id-token: write
