@@ -7,7 +7,7 @@
 # prosody, jicofo, jvb, nginx and jibri all come up in one container from
 # the same templates and scripts upstream ships and tests.
 #
-# We target the `stable-11248-1` release tag. The Debian packages come from
+# We target the `stable-11248-3` release tag. The Debian packages come from
 # the jitsi stable apt repo (and packages.prosody.im for prosody), pinned
 # below to the versions installed in that release's images.
 #
@@ -18,18 +18,18 @@
 # recordings, jibri) run as root, and every upstream service and config
 # oneshot is started as `s6` (see patches/apply-patches.sh).
 
-# Every jitsi image is pinned to the stable-11248-1 tag *and* its multi-arch
+# Every jitsi image is pinned to the stable-11248-3 tag *and* its multi-arch
 # index digest, so a re-pointed tag can't change what we build. The digest is
 # what's enforced (a tag next to a digest is ignored), so a bump changes both
 # on every line below, including the base-java FROM. Upstream publishes to
 # GHCR only since stable-11146 (jitsi/docker-jitsi-meet#2271).
 
 # Named stages we'll COPY templates, scripts and binaries from.
-FROM ghcr.io/jitsi/web:stable-11248-1@sha256:12980b5e55eba7b0543a8030910ae60736aa3fdf777d4c3c58348bc6af917f43 AS web-src
-FROM ghcr.io/jitsi/prosody:stable-11248-1@sha256:ccd795568ab4096edb624ca53490f2d8702ac16622df37a391dc29f664f24710 AS prosody-src
-FROM ghcr.io/jitsi/jicofo:stable-11248-1@sha256:470a471e052d7d5e8b62b2ccab2b639d3e5e0b3344388439fb3ec8cd8c441e86 AS jicofo-src
-FROM ghcr.io/jitsi/jvb:stable-11248-1@sha256:d2f546c8e11e6fb77285df854b0d131aab04dcaf98da946a9d16b2f03b86badb AS jvb-src
-FROM ghcr.io/jitsi/jibri:stable-11248-1@sha256:b0ccc0133a9c6289797a34666fdef4c987f851727cb4d750e768781f08a2a94e AS jibri-src
+FROM ghcr.io/jitsi/web:stable-11248-3@sha256:f2b3f749deb9b9d6d5b96cba50dc67f9c23a218af4fa13c63a7f17812ce4e147 AS web-src
+FROM ghcr.io/jitsi/prosody:stable-11248-3@sha256:3f1943334f2c07244d2f2ec582fa7b59e226d461ef97db267f0a92cbba13b968 AS prosody-src
+FROM ghcr.io/jitsi/jicofo:stable-11248-3@sha256:b934149573661e2d8e020e47bd81521263a7289de5fb38ba7da95d5b70933cd2 AS jicofo-src
+FROM ghcr.io/jitsi/jvb:stable-11248-3@sha256:d8e100c3573d0935aaa93b02daaa7f74d172042f2518c5f7e6036125c1d4ba7e AS jvb-src
+FROM ghcr.io/jitsi/jibri:stable-11248-3@sha256:4b1531c4698131c86991516e171506bdcdb73617d8921aec192eba891e30bd1e AS jibri-src
 
 # Final image inherits from jitsi/base-java which already has:
 #   * Debian trixie
@@ -40,7 +40,7 @@ FROM ghcr.io/jitsi/jibri:stable-11248-1@sha256:b0ccc0133a9c6289797a34666fdef4c98
 #   * the jitsi/stable apt repo + debian trixie-backports
 #   * openjdk-21 (needed for jicofo, jvb and jibri)
 #   * the unprivileged `s6` user every service runs as
-FROM ghcr.io/jitsi/base-java:stable-11248-1@sha256:b2b6a189edb3396c8d525f8640bce1984c9a339a2cf9044af7f950282d4220a9
+FROM ghcr.io/jitsi/base-java:stable-11248-3@sha256:cb50e63d630804b92e6405766dcb9597b5e59ae0f25772aa28cde7619d400e8b
 
 USER root
 ARG DEBIAN_FRONTEND=noninteractive
@@ -59,14 +59,13 @@ COPY --from=prosody-src /usr/share/keyrings/prosody.gpg /usr/share/keyrings/pros
 # bootstrap and recordings sidecar.
 #
 # Packages from the third-party jitsi and prosody.im apt repos are pinned to
-# exact versions (what the stable-11248-1 images have installed), so a new
+# exact versions (what the stable-11248-3 images have installed), so a new
 # upstream package can't slip into a rebuild. Bump them together with the
 # image digests.
 #
-# lua-inspect: stable-11248-1's prosody image dropped it, but the bundled
-# prosody plugins still `require "inspect"` (mod_auth_token fails to load
-# without it; jitsi/docker-jitsi-meet#2346, reverted in stable-11248-2). We
-# keep installing it.
+# lua-inspect: the bundled prosody plugins `require "inspect"` (mod_auth_token
+# fails to load without it). stable-11248-1's prosody image briefly dropped it
+# (jitsi/docker-jitsi-meet#2346); stable-11248-2 restored it, as here.
 RUN apt-dpkg-wrap apt-get update && \
     apt-dpkg-wrap apt-get install -y \
         `# web` \
