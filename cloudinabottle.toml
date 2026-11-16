@@ -1,6 +1,7 @@
 [app]
 name = "jitsi"
-version = "1.1.0"
+version = "1.1.1"
+release_tag_format = "semver"
 description = "Jitsi Meet video conferencing: XMPP + jicofo + jitsi-videobridge + nginx + jibri (recording) in one container."
 
 [runtime.container]
